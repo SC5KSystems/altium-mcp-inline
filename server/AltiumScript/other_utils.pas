@@ -109,8 +109,10 @@ begin
 end;
 
 // Modify the EnsureDocumentFocused function to handle all document types
-// and return more detailed information
-function EnsureDocumentFocused(CommandName: String): Boolean;
+// and return more detailed information.
+// ViewTypeHint is only consulted by commands that can target more than one
+// document kind (currently take_view_screenshot); pass '' otherwise.
+function EnsureDocumentFocused(CommandName: String; ViewTypeHint: String): Boolean;
 var
     I           : Integer;
     Project     : IProject;
@@ -154,10 +156,18 @@ begin
        (CommandName = 'get_net_connections')                 or
        (CommandName = 'set_component_position')              or
        (CommandName = 'set_pcb_layer_visibility')            or
-       (CommandName = 'get_pcb_layer_stackup')               or
-       (CommandName = 'take_view_screenshot')                then
+       (CommandName = 'get_pcb_layer_stackup')               then
     begin
         DocumentKind := 'PCB';
+    end
+    // Screenshots can target either domain - follow the caller's view_type
+    // instead of always demanding a PCB.
+    else if (CommandName = 'take_view_screenshot') then
+    begin
+        if LowerCase(ViewTypeHint) = 'sch' then
+            DocumentKind := 'SCH'
+        else
+            DocumentKind := 'PCB';
     end
     else if (CommandName = 'create_schematic_symbol')        or
             (CommandName = 'get_library_symbol_reference')   then

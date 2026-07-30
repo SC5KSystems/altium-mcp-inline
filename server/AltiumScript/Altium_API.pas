@@ -1013,10 +1013,33 @@ end;
 
 // Function to execute a command with parameters
 function ExecuteCommand(CommandName: String): String;
+var
+    ViewHint   : String;
+    HintIdx    : Integer;
+    HintStart  : Integer;
+    HintValue  : String;
 begin
     Result := '';
-    EnsureDocumentFocused(CommandName);
-    
+
+    // take_view_screenshot can target a PCB or a schematic. Pull view_type out
+    // of the request so the focus helper does not always demand a PCB.
+    ViewHint := '';
+    if CommandName = 'take_view_screenshot' then
+    begin
+        for HintIdx := 0 to RequestData.Count - 1 do
+        begin
+            if (Pos('"view_type"', RequestData[HintIdx]) > 0) then
+            begin
+                HintStart := Pos(':', RequestData[HintIdx]) + 1;
+                HintValue := Copy(RequestData[HintIdx], HintStart,
+                                  Length(RequestData[HintIdx]) - HintStart + 1);
+                ViewHint := LowerCase(TrimJSON(HintValue));
+            end;
+        end;
+    end;
+
+    EnsureDocumentFocused(CommandName, ViewHint);
+
     // Direct command execution based on the command name
     case CommandName of
         'get_component_pins':

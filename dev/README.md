@@ -71,5 +71,17 @@ python dev/sandbox_runner.py my_experiment.pas [timeout] [--auto-restart]
 
 Experiment body rules: assign findings to `ResultText`; Pascal has no inline
 declarations, so reuse the scratch variables declared in `Sandbox.pas`
-(`S1..S3`, `I1..I3`, `B1`, `Obj1..Obj3`, `List1`, `IntMan`, `DbDoc`) or add
+(`S1..S3`, `I1..I3`, `B1`, `Obj1..Obj5`, `List1`, `IntMan`, `DbDoc`) or add
 more there.
+
+Put risky reads (enum properties, anything that might not exist on this
+install) at the **end** of an experiment. `SandboxLog` flushes on every call,
+so a wedge there still leaves everything useful already on disk.
+
+## Findings
+
+- [`DBLIB_FINDINGS.md`](DBLIB_FINDINGS.md) - placing database-linked
+  components so they are indistinguishable from a GUI placement.
+- [`SHEET_DUPLICATION.md`](SHEET_DUPLICATION.md) - copying a schematic sheet.
+  The document iterator recurses, so `Container.ObjectId = 32` (not
+  `ObjectId`) is what identifies the objects a sheet actually owns.
