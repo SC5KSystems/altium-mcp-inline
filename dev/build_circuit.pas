@@ -273,9 +273,21 @@ begin
         Obj7 := Obj4.FirstSchObject;
         while (Obj7 <> nil) do
         begin
+            // ISch_Pin.Location is the end attached to the component BODY, not
+            // the electrical connection point. The hot end is PinLength away
+            // along the pin's orientation (0/1/2/3 = right/up/left/down).
+            // Wiring to Location instead runs the wire straight through the
+            // pin and out the far side - which shorts neighbouring pins that
+            // share a connection column, and leaves the pin itself unconnected.
+            I2 := CoordToMils(Obj7.Location.X);
+            B1 := CoordToMils(Obj7.Location.Y);
+            I3 := CoordToMils(Obj7.PinLength);
+            if (Obj7.Orientation = 0) then I2 := I2 + I3
+            else if (Obj7.Orientation = 1) then B1 := B1 + I3
+            else if (Obj7.Orientation = 2) then I2 := I2 - I3
+            else if (Obj7.Orientation = 3) then B1 := B1 - I3;
             List2.Add('PIN|' + Obj6.Designator.Text + '|' + Obj7.Name + '|' +
-                      IntToStr(CoordToMils(Obj7.Location.X)) + '|' +
-                      IntToStr(CoordToMils(Obj7.Location.Y)));
+                      IntToStr(I2) + '|' + IntToStr(B1));
             I1 := I1 + 1;
             Obj7 := Obj4.NextSchObject;
         end;

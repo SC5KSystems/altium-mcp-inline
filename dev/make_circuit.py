@@ -126,10 +126,17 @@ def read_pin_map():
 
 
 def wiring(pin):
-    """Orthogonal routes built from the real placed-pin coordinates.
+    """Orthogonal routes built from the pins' true electrical connection points.
 
-    Parts are positioned so that each part's "top" terminal already sits on
-    the rail it belongs to, so the routes here are short and mostly straight.
+    Everything is derived from the pin map rather than from the constants
+    above, so a part whose terminal does not land exactly on a rail simply
+    gets a short stub plus a junction instead of a silently broken connection.
+
+    Two rules keep the result readable and correct:
+      - never run a riser in the same column as a component's pin connection
+        points (all of U1's right-hand pins connect at one x, so a riser there
+        shorts SW/VOUT/FB together)
+      - a junction belongs only where three or more segments actually meet
     """
     def p(desig, name):
         try:
@@ -141,8 +148,7 @@ def wiring(pin):
     vin, adim, gnd = p("U1", "VIN"), p("U1", "ADIM"), p("U1", "GND")
     sw, vout, fb = p("U1", "SW"), p("U1", "VOUT"), p("U1", "FB")
     l_a, l_b = p("L1", "1"), p("L1", "2")
-    # Terminal naming on the passives is IN1/IN2; sort by height so "t" is the
-    # rail end and "g" the ground end regardless of how rotation ordered them.
+
     def top_bot(d):
         a, b = p(d, "IN1"), p(d, "IN2")
         return (a, b) if a[1] >= b[1] else (b, a)
@@ -150,39 +156,48 @@ def wiring(pin):
     c2t, c2g = top_bot("C2")
     r1t, r1g = top_bot("R1")
     r2t, r2g = top_bot("R2")
-    # J1 pin 2 is the upper of the two, so LED+ from the rail above and LED-
-    # down to the sense node route without crossing.
     j_hi, j_lo = p("J1", "2"), p("J1", "1")
 
-    rail_x0 = 1400                      # left end of the input rail
-    riser_x = vout[0] + 300             # VOUT climbs to the output rail here
     w, j, n, pw = [], [], [], []
 
-    # --- input rail: 5V0 -> C1 -> U1.VIN -> L1 ---------------------------
-    w.append([(rail_x0, RAIL_Y), (l_a[0], RAIL_Y)])
-    w.append([vin, (vin[0], RAIL_Y)])
-    j += [(c1t[0], RAIL_Y), (vin[0], RAIL_Y)]
-    pw.append((rail_x0, RAIL_Y, 1, 2, "5V0"))
+    def stub(term, y):
+        """Join a shunt part's terminal to a rail at height y, and mark the tee."""
+        if term[1] != y:
+            w.append([term, (term[0], y)])
+        j.append((term[0], y))
 
-    # --- L1 -> SW ---------------------------------------------------------
-    # Drop down at sw.x+200, NOT at sw.x: a vertical wire in the same column
-    # as U1's right-hand pins reads as if SW/VOUT/FB were shorted together.
-    w.append([l_b, (sw[0] + 200, l_b[1]), (sw[0] + 200, sw[1]), sw])
+    rail_y = l_a[1]                 # input rail sits on L1's own pin height
+    pin_col = sw[0]                 # U1's right-hand connection column
+    sw_x = pin_col + 200            # risers stay clear of that column
+    vout_x = pin_col + 400
+    fb_x = pin_col + 100
+    vout_y = j_hi[1]                # output rail meets J1 where it already is
+    fb_y = r1t[1]                   # current-set node sits on R1's own pin
+
+    # --- input rail: 5V0 -> C1 -> U1.VIN -> L1 ---------------------------
+    w.append([(1400, rail_y), l_a])
+    w.append([vin, (vin[0], rail_y)])
+    stub(c1t, rail_y)
+    j.append((vin[0], rail_y))
+    pw.append((1400, rail_y, 1, 2, "5V0"))
+
+    # --- SW -> L1 ---------------------------------------------------------
+    w.append([sw, (sw_x, sw[1]), (sw_x, rail_y), l_b])
 
     # --- VOUT -> output rail -> C2 -> J1 (LED+) ---------------------------
-    w.append([vout, (riser_x, vout[1]), (riser_x, VOUT_Y), j_hi])
-    j.append((c2t[0], VOUT_Y))
-    n.append((riser_x + 100, VOUT_Y + 100, 0, "LED+"))
+    w.append([vout, (vout_x, vout[1]), (vout_x, vout_y), j_hi])
+    stub(c2t, vout_y)
+    n.append((vout_x + 100, vout_y + 100, 0, "LED+"))
 
     # --- J1 (LED-) -> current-set node -> FB ------------------------------
-    w.append([j_lo, (j_lo[0], FB_Y), r1t])
-    w.append([fb, (fb[0] + 100, fb[1]), (fb[0] + 100, FB_Y), r1t])
+    w.append([j_lo, (j_lo[0], fb_y), r1t])
+    w.append([fb, (fb_x, fb[1]), (fb_x, fb_y), r1t])
     j.append(r1t)
-    n.append((fb[0] + 200, FB_Y + 100, 0, "LED-"))
+    n.append((fb_x + 100, fb_y + 100, 0, "LED-"))
 
     # --- ADIM: net label + pulldown ---------------------------------------
-    w.append([adim, r2t])
-    n.append((r2t[0] + 200, adim[1], 0, "BL_DIM"))
+    w.append([adim, (r2t[0], adim[1]), r2t])
+    n.append((r2t[0] + 200, adim[1] + 100, 0, "BL_DIM"))
 
     # --- grounds: a port under each part that returns to ground -----------
     w.append([gnd, (gnd[0] - 300, gnd[1]), (gnd[0] - 300, gnd[1] - 300)])
