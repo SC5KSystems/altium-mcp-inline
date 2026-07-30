@@ -51,16 +51,17 @@ PIN_MAP = Path("C:/Users/Public/altium_mcp/pin_map.txt")
 RAIL_Y = 4600     # input rail
 VOUT_Y = 4300     # output rail (LED+)
 FB_Y = 2600       # LED- / current-set node
-# orient is 0/1/2/3 = 0/90/180/270 deg; mirror flips left-right WITHOUT
-# turning the designator and comment text upside down, which a 180 rotation
-# would do - so J1 carries the flag to reset its text orientation after rotating.
+# orient is 0/1/2/3 = 0/90/180/270 deg. Leave a part at 0 unless its pins need
+# to face the other way, and check which way they already face: HEADER-2X1's
+# pins point left natively, so rotating J1 180 would put its body between the
+# incoming wires and its own connection points.
 PARTS = [
     # desig, corp part number,  x,     y,    orient, mirror
     ("U1", "4134-0002", 2400, 3000, 0, 0),  # TPS923611 LED driver, SOT563
     ("L1", "3210-0028", 2900, 4600, 0, 0),  # 10uH 0.84A   pins (3000,4600)-(3400,4600)
     ("C1", "2140-0021", 2100, 4390, 1, 0),  # 4.7uF 16V 0805 - input, top pin on RAIL_Y
     ("C2", "2140-0026", 4500, 4090, 1, 0),  # 2.2uF 50V 0805 - output, top pin on VOUT_Y
-    ("J1", "6101-0041", 5600, 4300, 2, 1),  # 2x1 header - backlight string, pins face left
+    ("J1", "6101-0041", 5600, 4300, 0, 0),  # 2x1 header - backlight string
     ("R1", "1112-0082", 4200, 2100, 1, 0),  # 10.0 ohm - LED current set, top pin on FB_Y
     ("R2", "1112-0004", 2000, 2800, 1, 0),  # 100K - ADIM pulldown, top pin at ADIM height
 ]
@@ -156,7 +157,10 @@ def wiring(pin):
     c2t, c2g = top_bot("C2")
     r1t, r1g = top_bot("R1")
     r2t, r2g = top_bot("R2")
-    j_hi, j_lo = p("J1", "2"), p("J1", "1")
+    # Pick J1's rails by height, not by pin number: which pin is upper
+    # depends on the symbol and its orientation.
+    j_a, j_b = p("J1", "1"), p("J1", "2")
+    j_hi, j_lo = (j_a, j_b) if j_a[1] >= j_b[1] else (j_b, j_a)
 
     w, j, n, pw = [], [], [], []
 

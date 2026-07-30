@@ -86,27 +86,6 @@ begin
                 SchServer.RobotManager.SendMessage(TargetDoc.I_ObjectAddress, c_BroadCast,
                     SCHM_PrimitiveRegistration, Obj3.I_ObjectAddress);
 
-                // Field 8 = "keep text upright". Rotating a part 180 to face
-                // its pins the other way also turns its designator, comment
-                // and visible parameters upside down. ISch_Component.IsMirrored
-                // is not an alternative - it sets True but leaves the pin
-                // coordinates unchanged. So undo the rotation on the text only.
-                if (SbxField(S1, 8) = '1') then
-                begin
-                    Obj3.Designator.Orientation := 0;
-                    Obj3.Comment.Orientation := 0;
-                    Obj2 := Obj3.SchIterator_Create;
-                    Obj2.AddFilter_ObjectSet(MkSet(eParameter));
-                    Obj6 := Obj2.FirstSchObject;
-                    while (Obj6 <> nil) do
-                    begin
-                        Obj6.Orientation := 0;
-                        Obj6 := Obj2.NextSchObject;
-                    end;
-                    Obj3.SchIterator_Destroy(Obj2);
-                    SandboxLog('  text kept upright on ' + SbxField(S1, 1));
-                end;
-
                 // MoveByXY (not Location) so the designator/comment text moves too
                 Obj3.MoveByXY(
                     MilsToCoord(StrToInt(SbxField(S1, 5)) - CoordToMils(Obj3.Location.X)),
@@ -254,6 +233,58 @@ begin
             I5 := I5 + 1;
         end;
     end;
+
+    // Parameters added programmatically default to the component origin, so
+    // they stack on top of the symbol. Let Altium lay them out properly.
+    SandboxLog('resetting parameter positions');
+    TargetDoc.ResetAllSchParametersPosition;
+    SandboxLog('parameter positions reset');
+
+    // Lay out the visible text on ROTATED parts, in a column right of the body.
+    //
+    // KNOWN LIMITATION: this does not fix CAP-NP. Its value/voltage/tolerance
+    // text still renders stacked along the rotated symbol, and the same code
+    // visibly works on RES-DISCRETE from the same library. Ruled out so far:
+    // the parameters are not rotated (they report Orientation=0), Autoposition
+    // is already False, and neither ResetAllSchParametersPosition nor an
+    // explicit Location/MoveToXY changes what is drawn. The asymmetry between
+    // two symbols in one library is the thread to pull on next - most likely
+    // something in how CAP-NP itself defines its parameter text.
+    SandboxLog('laying out text on rotated parts');
+    Obj2 := TargetDoc.SchIterator_Create;
+    Obj2.AddFilter_ObjectSet(MkSet(eSchComponent));
+    Obj6 := Obj2.FirstSchObject;
+    while (Obj6 <> nil) do
+    begin
+        if (Obj6.Orientation <> 0) then
+        begin
+            Obj5 := Obj6.BoundingRectangle;
+            I1 := CoordToMils(Obj5.Right) + 30;    // column x
+            I2 := CoordToMils(Obj5.Top);           // running y, walks downward
+            Obj6.Designator.Autoposition := False;
+            Obj6.Designator.Orientation := 0;
+            Obj6.Designator.Location := Point(MilsToCoord(I1), MilsToCoord(I2));
+            I2 := I2 - 100;
+            Obj4 := Obj6.SchIterator_Create;
+            Obj4.AddFilter_ObjectSet(MkSet(eParameter));
+            Obj7 := Obj4.FirstSchObject;
+            while (Obj7 <> nil) do
+            begin
+                if (Obj7.IsHidden = False) then
+                begin
+                    Obj7.Autoposition := False;
+                    Obj7.Orientation := 0;
+                    Obj7.Location := Point(MilsToCoord(I1), MilsToCoord(I2));
+                    I2 := I2 - 100;
+                end;
+                Obj7 := Obj4.NextSchObject;
+            end;
+            Obj6.SchIterator_Destroy(Obj4);
+            SandboxLog('  laid out ' + Obj6.Designator.Text);
+        end;
+        Obj6 := Obj2.NextSchObject;
+    end;
+    TargetDoc.SchIterator_Destroy(Obj2);
 
     SchServer.ProcessControl.PostProcess(TargetDoc, '');
     TargetDoc.GraphicallyInvalidate;
