@@ -48,33 +48,35 @@ PIN_MAP = Path("C:/Users/Public/altium_mcp/pin_map.txt")
 # from a placement run's pin_map.txt rather than predicted - a rotated symbol's
 # pin offsets are not obvious (a rotated CAP-NP puts its pins 100 mil left of
 # the origin and only 110 mil apart).
-RAIL_Y = 4600     # input rail
-VOUT_Y = 5000     # output rail (LED+)
-FB_Y = 3000       # LED- node: the FB pin's own height, so FB exits straight
+GRID = 100        # schematic snap grid; all spacing is a multiple of this
+TAP_GAP = GRID    # wire between a shunt pin and the node it taps
+GND_DROP = GRID   # wire from a pin down to its ground port
 
-# Locations are the symbol ORIGIN. The hot-end offsets below were MEASURED from
-# a placement run, not predicted, and parts are positioned so that each shunt
-# terminal lands EXACTLY on the rail it belongs to.
+# Rails are packed just clear of the pin rows they serve rather than floated
+# high above the part - tall empty risers are wasted sheet, not clarity.
+#   U1 pin rows:  FB 3000, VOUT 3300, SW 3600
+RAIL_Y = 4100     # 5V0 input rail. Not tighter: C1 hangs below it and its
+                  # text block needs room before R2's block starts.
+LEDP_Y = 3300     # LED+ runs straight out of VOUT at its own height
+FB_Y = 3000       # LED- runs straight out of FB at its own height
+
+# Locations are the symbol ORIGIN. Hot-end offsets were MEASURED, not guessed:
+#   CAP-NP   rot90: (-100, 0) and (-100, +300)
+#   RES-DISC rot90: (-100, 0) and (-100, +600)
+#   INDUCTOR rot0 : (0, 0) and (+600, 0)
+#   HEADER-2X1    : pin2 (0, 0), pin1 (0, +100)
+#   TPS92361      : left pins (0, 0/+300/+600), right (+1500, 0/+300/+600)
 #
-# That exactness matters. Previously a rail sat inside a pin's span, so the
-# connecting stub ran from the outer hot end back down along the pin into the
-# body - electrically attached at one end, but drawn over the symbol and
-# reading as "wired to the dead side of the pin". No stub, no problem.
-#
-# Measured hot-end offsets from Location:
-#   CAP-NP  rot90: (-100, 0) and (-100, +300)
-#   RES-DISC rot90:(-100, 0) and (-100, +600)
-#   INDUCTOR rot0: (0, 0) and (+600, 0)
-#   HEADER-2X1   : pin2 (0, 0), pin1 (0, +100)
-#   TPS92361     : left pins (0, 0/+300/+600), right pins (+1500, 0/+300/+600)
+# Shunt parts sit TAP_GAP below their rail, not on it, so there is a short wire
+# between the pin and the junction instead of a node sitting on the pin.
 PARTS = [
     # desig, corp part number,  x,     y,    orient, mirror
     ("U1", "4134-0002", 2400, 3000, 0, 0),  # VIN(2400,3600) SW(3900,3600) FB(3900,3000)
-    ("L1", "3210-0028", 2900, 4600, 0, 0),  # pins (2900,4600)-(3500,4600) ON the rail
-    ("C1", "2140-0021", 2100, 4300, 1, 0),  # top hot (2000,4600) ON the rail
-    ("C2", "2140-0026", 5000, 4700, 1, 0),  # top hot (4900,5000) ON the LED+ rail
-    ("J1", "6101-0041", 5600, 4900, 0, 0),  # mirror=1 would flip pins to x-200  # pin1 (5600,5000) LED+, pin2 (5600,4900) LED-
-    ("R1", "1112-0082", 4500, 2400, 1, 0),  # top hot (4400,3000) ON the LED- line
+    ("L1", "3210-0028", 2900, 4100, 0, 0),  # pins (2900,4100)-(3500,4100) on the rail
+    ("C1", "2140-0021", 2100, 3700, 1, 0),  # top hot (2000,4000) = RAIL_Y - TAP_GAP
+    ("C2", "2140-0026", 5300, 2900, 1, 0),  # top hot (5200,3200); right of R1's text
+    ("J1", "6101-0041", 5600, 3200, 0, 0),  # pin2 (5600,3200) LED-, pin1 (5600,3300) LED+
+    ("R1", "1112-0082", 4200, 2300, 1, 0),  # top hot (4100,2900); left of C2's text
     ("R2", "1112-0004", 2000, 2700, 1, 0),  # top hot (1900,3300) at ADIM height
 ]
 
@@ -141,11 +143,13 @@ def read_pin_map():
 def wiring(pin):
     """Orthogonal routes from the pins' true electrical connection points.
 
-    Rules learned the hard way:
-      - every wire ends ON a hot end; parts are placed so no stub is needed
-      - risers never share a column with a pin's connection points, or the
-        wire drives through one pin on its way to another
-      - risers keep >=300 mil clear of symbol bodies
+    Drafting rules (see dev/SCHEMATIC_CONVENTIONS.md):
+      - every wire ends ON a hot end, never part-way along a pin
+      - a shunt part taps its rail through a TAP_GAP wire, so the junction
+        never sits directly on a pin
+      - ground is one grid across, one grid down - no long detours
+      - risers never share a column with a pin's connection points
+      - net labels sit ON the wire they name
     """
     def p(desig, name):
         try:
@@ -168,52 +172,58 @@ def wiring(pin):
     j_a, j_b = p("J1", "1"), p("J1", "2")
     j_hi, j_lo = (j_a, j_b) if j_a[1] >= j_b[1] else (j_b, j_a)
 
-    # Fail loudly if a terminal is not on its rail. Silently inserting a stub
-    # is what produced wires drawn back along the pin into the body.
-    for what, got, want in (("C1 top", c1t[1], RAIL_Y), ("L1", l_a[1], RAIL_Y),
-                            ("C2 top", c2t[1], VOUT_Y), ("R1 top", r1t[1], FB_Y),
-                            ("J1 LED+", j_hi[1], VOUT_Y)):
+    # A shunt terminal must sit exactly TAP_GAP below its rail. Too close and
+    # the junction lands on the pin; misaligned and the tap wire is diagonal.
+    for what, got, want in (("C1 top", c1t[1], RAIL_Y - TAP_GAP),
+                            ("L1", l_a[1], RAIL_Y),
+                            ("C2 top", c2t[1], LEDP_Y - TAP_GAP),
+                            ("R1 top", r1t[1], FB_Y - TAP_GAP),
+                            ("J1 LED+", j_hi[1], LEDP_Y)):
         if got != want:
-            raise SystemExit(f"{what} sits at y={got} but its rail is y={want}; "
-                             f"move the part rather than stubbing to it")
+            raise SystemExit(f"{what} sits at y={got}, expected y={want}; "
+                             f"move the part rather than bending the wire to it")
 
-    sw_x = sw[0] + 300          # riser columns, clear of the pin column (3900)
-    vout_x = vout[0] + 600
-    fb_x = r1t[0]
     w, j, n, pw = [], [], [], []
+
+    def tap(term, rail_y):
+        """Short wire from a shunt pin up to its rail, plus the junction."""
+        w.append([term, (term[0], rail_y)])
+        j.append((term[0], rail_y))
+
+    def to_ground(term):
+        w.append([term, (term[0], term[1] - GND_DROP)])
+        pw.append((term[0], term[1] - GND_DROP, 3, 4, "GND"))
 
     # --- input rail: 5V0 -> C1 -> U1.VIN -> L1 ---------------------------
     w.append([(1400, RAIL_Y), l_a])
     w.append([vin, (vin[0], RAIL_Y)])
-    j += [(c1t[0], RAIL_Y), (vin[0], RAIL_Y)]
+    j.append((vin[0], RAIL_Y))
+    tap(c1t, RAIL_Y)
     pw.append((1400, RAIL_Y, 1, 2, "5V0"))
 
-    # --- L1 -> SW ---------------------------------------------------------
-    w.append([l_b, (sw_x, RAIL_Y), (sw_x, sw[1]), sw])
+    # --- L1 -> SW: drop clear of the pin column, then in --------------------
+    w.append([l_b, (sw[0] + 2 * GRID, RAIL_Y), (sw[0] + 2 * GRID, sw[1]), sw])
 
-    # --- VOUT -> LED+ rail -> C2 -> J1 ------------------------------------
-    w.append([vout, (vout_x, vout[1]), (vout_x, VOUT_Y), j_hi])
-    j.append((c2t[0], VOUT_Y))
-    n.append((vout_x + 500, VOUT_Y, 0, "LED+"))
+    # --- VOUT -> LED+ -> J1, straight out at VOUT's own height -------------
+    w.append([vout, j_hi])
+    tap(c2t, LEDP_Y)
+    n.append(((vout[0] + j_hi[0]) // 2 + 200, LEDP_Y, 0, "LED+"))
 
-    # --- FB -> LED- -> J1 -------------------------------------------------
-    # Straight out of FB, one riser, into the header. R1 taps the same line, so
-    # there is no dog-leg down and back up.
-    led_x = j_lo[0] - 300
-    w.append([fb, (led_x, FB_Y), (led_x, j_lo[1]), j_lo])
-    j.append(r1t)
-    n.append((r1t[0] + 400, FB_Y, 0, "LED-"))
+    # --- FB -> LED- -> J1, straight out at FB's own height ------------------
+    # riser sits clear of C2's body, which reaches to its own Location.x
+    w.append([fb, (j_lo[0] - 2 * GRID, FB_Y), (j_lo[0] - 2 * GRID, j_lo[1]), j_lo])
+    tap(r1t, FB_Y)
+    n.append((r1t[0] + 500, FB_Y, 0, "LED-"))
 
-    # --- ADIM: net label + pulldown ---------------------------------------
+    # --- ADIM: net label + pulldown ----------------------------------------
     w.append([adim, r2t])
     n.append((r2t[0] + 250, adim[1], 0, "BL_DIM"))
 
-    # --- grounds ----------------------------------------------------------
-    w.append([gnd, (gnd[0] - 300, gnd[1]), (gnd[0] - 300, gnd[1] - 300)])
-    pw.append((gnd[0] - 300, gnd[1] - 300, 3, 4, "GND"))
+    # --- grounds: one grid across, one grid down ---------------------------
+    w.append([gnd, (gnd[0] - GRID, gnd[1]), (gnd[0] - GRID, gnd[1] - GND_DROP)])
+    pw.append((gnd[0] - GRID, gnd[1] - GND_DROP, 3, 4, "GND"))
     for term in (c1g, c2g, r1g, r2g):
-        w.append([term, (term[0], term[1] - 200)])
-        pw.append((term[0], term[1] - 200, 3, 4, "GND"))
+        to_ground(term)
 
     return w, j, n, pw
 

@@ -82,6 +82,10 @@ so a wedge there still leaves everything useful already on disk.
 
 - [`DBLIB_FINDINGS.md`](DBLIB_FINDINGS.md) - placing database-linked
   components so they are indistinguishable from a GUI placement.
+- [`SCHEMATIC_CONVENTIONS.md`](SCHEMATIC_CONVENTIONS.md) - **read before
+  generating any schematic.** Pin connection points, tap gaps, ground length,
+  rail placement, net-label attachment, parameter text, mirroring, and the
+  verification rules. Every entry is a mistake that was made and corrected.
 - [`SHEET_DUPLICATION.md`](SHEET_DUPLICATION.md) - copying a schematic sheet.
   The document iterator recurses, so `Container.ObjectId = 32` (not
   `ObjectId`) is what identifies the objects a sheet actually owns.
