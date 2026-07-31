@@ -86,6 +86,45 @@ begin
                 SchServer.RobotManager.SendMessage(TargetDoc.I_ObjectAddress, c_BroadCast,
                     SCHM_PrimitiveRegistration, Obj3.I_ObjectAddress);
 
+                // Field 9 = mirror (the schematic editor's X key). Applied
+                // after registration; the flag does not survive on a detached
+                // replica. Pin x-positions are logged either side so it is
+                // evident whether the pins actually moved.
+                if (SbxField(S1, 8) = '1') then
+                begin
+                    Obj5 := Obj3.SchIterator_Create;
+                    Obj5.AddFilter_ObjectSet(MkSet(ePin));
+                    Obj7 := Obj5.FirstSchObject;
+                    S5 := '';
+                    while (Obj7 <> nil) do
+                    begin
+                        S5 := S5 + Obj7.Name + '@' + IntToStr(CoordToMils(Obj7.Location.X)) + ' ';
+                        Obj7 := Obj5.NextSchObject;
+                    end;
+                    Obj3.SchIterator_Destroy(Obj5);
+                    SandboxLog('  mirror before: ' + S5);
+
+                    // IsMirrored is a display flag only - verified: it sets
+                    // True but the pin coordinates do not move. The real
+                    // transform is Mirror(Axis), where Axis is a point the
+                    // component is reflected about (the editor's X key).
+                    SandboxLog('  calling Mirror(axis) about component Location');
+                    Obj3.Mirror(Obj3.Location);
+                    SandboxLog('  Mirror(axis) returned');
+
+                    Obj5 := Obj3.SchIterator_Create;
+                    Obj5.AddFilter_ObjectSet(MkSet(ePin));
+                    Obj7 := Obj5.FirstSchObject;
+                    S5 := '';
+                    while (Obj7 <> nil) do
+                    begin
+                        S5 := S5 + Obj7.Name + '@' + IntToStr(CoordToMils(Obj7.Location.X)) + ' ';
+                        Obj7 := Obj5.NextSchObject;
+                    end;
+                    Obj3.SchIterator_Destroy(Obj5);
+                    SandboxLog('  mirror after : ' + S5);
+                end;
+
                 // MoveByXY (not Location) so the designator/comment text moves too
                 Obj3.MoveByXY(
                     MilsToCoord(StrToInt(SbxField(S1, 5)) - CoordToMils(Obj3.Location.X)),
@@ -240,51 +279,97 @@ begin
     TargetDoc.ResetAllSchParametersPosition;
     SandboxLog('parameter positions reset');
 
-    // Lay out the visible text on ROTATED parts, in a column right of the body.
-    //
-    // KNOWN LIMITATION: this does not fix CAP-NP. Its value/voltage/tolerance
-    // text still renders stacked along the rotated symbol, and the same code
-    // visibly works on RES-DISCRETE from the same library. Ruled out so far:
-    // the parameters are not rotated (they report Orientation=0), Autoposition
-    // is already False, and neither ResetAllSchParametersPosition nor an
-    // explicit Location/MoveToXY changes what is drawn. The asymmetry between
-    // two symbols in one library is the thread to pull on next - most likely
-    // something in how CAP-NP itself defines its parameter text.
-    SandboxLog('laying out text on rotated parts');
+    // Apply harvested parameter placement, keyed by LibReference.
+    // Offsets, Justification and Orientation come from real components on a
+    // hand-drawn sheet (dev/harvest_param_placement.pas), so generated parts
+    // match house style. Justification is what makes a column line up -
+    // setting position alone still leaves the text ragged.
+    // Stash the counters: the styling loop below reuses I4/I5 for
+    // component coordinates and would otherwise clobber them.
+    S3 := IntToStr(I4) + '|' + IntToStr(I5);
+
+    SandboxLog('applying harvested parameter placement');
+    List2 := TStringList.Create;
+    if FileExists('C:\Users\Public\altium_mcp\param_placement.txt') then
+        List2.LoadFromFile('C:\Users\Public\altium_mcp\param_placement.txt');
+    SandboxLog('placement records = ' + IntToStr(List2.Count));
+
     Obj2 := TargetDoc.SchIterator_Create;
     Obj2.AddFilter_ObjectSet(MkSet(eSchComponent));
     Obj6 := Obj2.FirstSchObject;
     while (Obj6 <> nil) do
     begin
-        if (Obj6.Orientation <> 0) then
+        S4 := Obj6.LibReference;
+        I4 := CoordToMils(Obj6.Location.X);
+        I5 := CoordToMils(Obj6.Location.Y);
+
+
+        B1 := 0;
+        for I1 := 0 to List2.Count - 1 do
+            if (SbxField(List2[I1], 1) = S4) then B1 := 1;
+
+        if (B1 = 1) then
         begin
-            Obj5 := Obj6.BoundingRectangle;
-            I1 := CoordToMils(Obj5.Right) + 30;    // column x
-            I2 := CoordToMils(Obj5.Top);           // running y, walks downward
-            Obj6.Designator.Autoposition := False;
-            Obj6.Designator.Orientation := 0;
-            Obj6.Designator.Location := Point(MilsToCoord(I1), MilsToCoord(I2));
-            I2 := I2 - 100;
+            // Hide everything first, then reveal exactly what the reference
+            // component showed - otherwise stray parameters stay scattered.
             Obj4 := Obj6.SchIterator_Create;
             Obj4.AddFilter_ObjectSet(MkSet(eParameter));
             Obj7 := Obj4.FirstSchObject;
             while (Obj7 <> nil) do
             begin
-                if (Obj7.IsHidden = False) then
-                begin
-                    Obj7.Autoposition := False;
-                    Obj7.Orientation := 0;
-                    Obj7.Location := Point(MilsToCoord(I1), MilsToCoord(I2));
-                    I2 := I2 - 100;
-                end;
+                Obj7.IsHidden := True;
                 Obj7 := Obj4.NextSchObject;
             end;
             Obj6.SchIterator_Destroy(Obj4);
-            SandboxLog('  laid out ' + Obj6.Designator.Text);
+
+            for I1 := 0 to List2.Count - 1 do
+            begin
+                S1 := List2[I1];
+                if (SbxField(S1, 1) = S4) then
+                begin
+                    // Offsets stay relative to the component Location, as
+                    // harvested. Anchoring to BoundingRectangle instead does
+                    // NOT work: the bounding rectangle includes the parameter
+                    // text, so moving the text grows the box and the next pass
+                    // pushes it further - the block walks off the sheet.
+                    S5 := SbxField(S1, 3);
+                    I3 := I4 + StrToInt(SbxField(S1, 4));
+                    if (S5 = 'DESIGNATOR') then
+                    begin
+                        Obj6.Designator.Autoposition := False;
+                        Obj6.Designator.Orientation := StrToInt(SbxField(S1, 7));
+                        Obj6.Designator.Justification := StrToInt(SbxField(S1, 6));
+                        Obj6.Designator.MoveToXY(MilsToCoord(I3),
+                            MilsToCoord(I5 + StrToInt(SbxField(S1, 5))));
+                    end
+                    else
+                    begin
+                        Obj4 := Obj6.SchIterator_Create;
+                        Obj4.AddFilter_ObjectSet(MkSet(eParameter));
+                        Obj7 := Obj4.FirstSchObject;
+                        while (Obj7 <> nil) do
+                        begin
+                            if (UpperCase(Obj7.Name) = UpperCase(S5)) then
+                            begin
+                                Obj7.IsHidden := False;
+                                Obj7.Autoposition := False;
+                                Obj7.Orientation := StrToInt(SbxField(S1, 7));
+                                Obj7.Justification := StrToInt(SbxField(S1, 6));
+                                Obj7.MoveToXY(MilsToCoord(I3),
+                                    MilsToCoord(I5 + StrToInt(SbxField(S1, 5))));
+                            end;
+                            Obj7 := Obj4.NextSchObject;
+                        end;
+                        Obj6.SchIterator_Destroy(Obj4);
+                    end;
+                end;
+            end;
+            SandboxLog('  styled ' + Obj6.Designator.Text + ' (' + S4 + ')');
         end;
         Obj6 := Obj2.NextSchObject;
     end;
     TargetDoc.SchIterator_Destroy(Obj2);
+    List2.Free;
 
     SchServer.ProcessControl.PostProcess(TargetDoc, '');
     TargetDoc.GraphicallyInvalidate;
@@ -330,7 +415,7 @@ begin
     SandboxLog('pins mapped = ' + IntToStr(I1));
     List2.Free;
 
-    ResultText := '{"sheet": "' + TargetDoc.DocumentName + '", "parts": ' + IntToStr(I4) +
-                  ', "graphics": ' + IntToStr(I5) + ', "pins": ' + IntToStr(I1) + '}';
+    ResultText := '{"sheet": "' + TargetDoc.DocumentName + '", "parts": ' + SbxField(S3, 0) +
+                  ', "graphics": ' + SbxField(S3, 1) + ', "pins": ' + IntToStr(I1) + '}';
 end;
 List1.Free;

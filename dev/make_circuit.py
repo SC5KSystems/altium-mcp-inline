@@ -49,21 +49,33 @@ PIN_MAP = Path("C:/Users/Public/altium_mcp/pin_map.txt")
 # pin offsets are not obvious (a rotated CAP-NP puts its pins 100 mil left of
 # the origin and only 110 mil apart).
 RAIL_Y = 4600     # input rail
-VOUT_Y = 4300     # output rail (LED+)
+VOUT_Y = 5000     # output rail (LED+)
 FB_Y = 2600       # LED- / current-set node
-# orient is 0/1/2/3 = 0/90/180/270 deg. Leave a part at 0 unless its pins need
-# to face the other way, and check which way they already face: HEADER-2X1's
-# pins point left natively, so rotating J1 180 would put its body between the
-# incoming wires and its own connection points.
+
+# Locations are the symbol ORIGIN. The hot-end offsets below were MEASURED from
+# a placement run, not predicted, and parts are positioned so that each shunt
+# terminal lands EXACTLY on the rail it belongs to.
+#
+# That exactness matters. Previously a rail sat inside a pin's span, so the
+# connecting stub ran from the outer hot end back down along the pin into the
+# body - electrically attached at one end, but drawn over the symbol and
+# reading as "wired to the dead side of the pin". No stub, no problem.
+#
+# Measured hot-end offsets from Location:
+#   CAP-NP  rot90: (-100, 0) and (-100, +300)
+#   RES-DISC rot90:(-100, 0) and (-100, +600)
+#   INDUCTOR rot0: (0, 0) and (+600, 0)
+#   HEADER-2X1   : pin2 (0, 0), pin1 (0, +100)
+#   TPS92361     : left pins (0, 0/+300/+600), right pins (+1500, 0/+300/+600)
 PARTS = [
     # desig, corp part number,  x,     y,    orient, mirror
-    ("U1", "4134-0002", 2400, 3000, 0, 0),  # TPS923611 LED driver, SOT563
-    ("L1", "3210-0028", 2900, 4600, 0, 0),  # 10uH 0.84A   pins (3000,4600)-(3400,4600)
-    ("C1", "2140-0021", 2100, 4390, 1, 0),  # 4.7uF 16V 0805 - input, top pin on RAIL_Y
-    ("C2", "2140-0026", 4500, 4090, 1, 0),  # 2.2uF 50V 0805 - output, top pin on VOUT_Y
-    ("J1", "6101-0041", 5600, 4300, 0, 0),  # 2x1 header - backlight string
-    ("R1", "1112-0082", 4200, 2100, 1, 0),  # 10.0 ohm - LED current set, top pin on FB_Y
-    ("R2", "1112-0004", 2000, 2800, 1, 0),  # 100K - ADIM pulldown, top pin at ADIM height
+    ("U1", "4134-0002", 2400, 3000, 0, 0),  # VIN(2400,3600) SW(3900,3600) FB(3900,3000)
+    ("L1", "3210-0028", 2900, 4600, 0, 0),  # pins (2900,4600)-(3500,4600) ON the rail
+    ("C1", "2140-0021", 2100, 4300, 1, 0),  # top hot (2000,4600) ON the rail
+    ("C2", "2140-0026", 5000, 4700, 1, 0),  # top hot (4900,5000) ON the LED+ rail
+    ("J1", "6101-0041", 5600, 4900, 0, 0),  # mirror=1 would flip pins to x-200  # pin1 (5600,5000) LED+, pin2 (5600,4900) LED-
+    ("R1", "1112-0082", 4500, 2000, 1, 0),  # top hot (4400,2600) ON the sense node
+    ("R2", "1112-0004", 2000, 2700, 1, 0),  # top hot (1900,3300) at ADIM height
 ]
 
 
@@ -127,17 +139,13 @@ def read_pin_map():
 
 
 def wiring(pin):
-    """Orthogonal routes built from the pins' true electrical connection points.
+    """Orthogonal routes from the pins' true electrical connection points.
 
-    Everything is derived from the pin map rather than from the constants
-    above, so a part whose terminal does not land exactly on a rail simply
-    gets a short stub plus a junction instead of a silently broken connection.
-
-    Two rules keep the result readable and correct:
-      - never run a riser in the same column as a component's pin connection
-        points (all of U1's right-hand pins connect at one x, so a riser there
-        shorts SW/VOUT/FB together)
-      - a junction belongs only where three or more segments actually meet
+    Rules learned the hard way:
+      - every wire ends ON a hot end; parts are placed so no stub is needed
+      - risers never share a column with a pin's connection points, or the
+        wire drives through one pin on its way to another
+      - risers keep >=300 mil clear of symbol bodies
     """
     def p(desig, name):
         try:
@@ -151,59 +159,54 @@ def wiring(pin):
     l_a, l_b = p("L1", "1"), p("L1", "2")
 
     def top_bot(d):
-        a, b = p(d, "IN1"), p(d, "IN2")
-        return (a, b) if a[1] >= b[1] else (b, a)
+        a_, b_ = p(d, "IN1"), p(d, "IN2")
+        return (a_, b_) if a_[1] >= b_[1] else (b_, a_)
     c1t, c1g = top_bot("C1")
     c2t, c2g = top_bot("C2")
     r1t, r1g = top_bot("R1")
     r2t, r2g = top_bot("R2")
-    # Pick J1's rails by height, not by pin number: which pin is upper
-    # depends on the symbol and its orientation.
     j_a, j_b = p("J1", "1"), p("J1", "2")
     j_hi, j_lo = (j_a, j_b) if j_a[1] >= j_b[1] else (j_b, j_a)
 
+    # Fail loudly if a terminal is not on its rail. Silently inserting a stub
+    # is what produced wires drawn back along the pin into the body.
+    for what, got, want in (("C1 top", c1t[1], RAIL_Y), ("L1", l_a[1], RAIL_Y),
+                            ("C2 top", c2t[1], VOUT_Y), ("R1 top", r1t[1], FB_Y),
+                            ("J1 LED+", j_hi[1], VOUT_Y)):
+        if got != want:
+            raise SystemExit(f"{what} sits at y={got} but its rail is y={want}; "
+                             f"move the part rather than stubbing to it")
+
+    sw_x = sw[0] + 300          # riser columns, clear of the pin column (3900)
+    vout_x = vout[0] + 600
+    fb_x = r1t[0]
     w, j, n, pw = [], [], [], []
 
-    def stub(term, y):
-        """Join a shunt part's terminal to a rail at height y, and mark the tee."""
-        if term[1] != y:
-            w.append([term, (term[0], y)])
-        j.append((term[0], y))
-
-    rail_y = l_a[1]                 # input rail sits on L1's own pin height
-    pin_col = sw[0]                 # U1's right-hand connection column
-    sw_x = pin_col + 200            # risers stay clear of that column
-    vout_x = pin_col + 400
-    fb_x = pin_col + 100
-    vout_y = j_hi[1]                # output rail meets J1 where it already is
-    fb_y = r1t[1]                   # current-set node sits on R1's own pin
-
     # --- input rail: 5V0 -> C1 -> U1.VIN -> L1 ---------------------------
-    w.append([(1400, rail_y), l_a])
-    w.append([vin, (vin[0], rail_y)])
-    stub(c1t, rail_y)
-    j.append((vin[0], rail_y))
-    pw.append((1400, rail_y, 1, 2, "5V0"))
+    w.append([(1400, RAIL_Y), l_a])
+    w.append([vin, (vin[0], RAIL_Y)])
+    j += [(c1t[0], RAIL_Y), (vin[0], RAIL_Y)]
+    pw.append((1400, RAIL_Y, 1, 2, "5V0"))
 
-    # --- SW -> L1 ---------------------------------------------------------
-    w.append([sw, (sw_x, sw[1]), (sw_x, rail_y), l_b])
+    # --- L1 -> SW ---------------------------------------------------------
+    w.append([l_b, (sw_x, RAIL_Y), (sw_x, sw[1]), sw])
 
-    # --- VOUT -> output rail -> C2 -> J1 (LED+) ---------------------------
-    w.append([vout, (vout_x, vout[1]), (vout_x, vout_y), j_hi])
-    stub(c2t, vout_y)
-    n.append((vout_x + 100, vout_y + 100, 0, "LED+"))
+    # --- VOUT -> LED+ rail -> C2 -> J1 ------------------------------------
+    w.append([vout, (vout_x, vout[1]), (vout_x, VOUT_Y), j_hi])
+    j.append((c2t[0], VOUT_Y))
+    n.append((vout_x + 200, VOUT_Y + 100, 0, "LED+"))
 
-    # --- J1 (LED-) -> current-set node -> FB ------------------------------
-    w.append([j_lo, (j_lo[0], fb_y), r1t])
-    w.append([fb, (fb_x, fb[1]), (fb_x, fb_y), r1t])
+    # --- J1 LED- -> current-set node -> FB --------------------------------
+    w.append([j_lo, (j_lo[0], FB_Y), r1t])
+    w.append([fb, (fb_x, fb[1]), r1t])
     j.append(r1t)
-    n.append((fb_x + 100, fb_y + 100, 0, "LED-"))
+    n.append((fb_x + 200, FB_Y + 100, 0, "LED-"))
 
     # --- ADIM: net label + pulldown ---------------------------------------
-    w.append([adim, (r2t[0], adim[1]), r2t])
+    w.append([adim, r2t])
     n.append((r2t[0] + 200, adim[1] + 100, 0, "BL_DIM"))
 
-    # --- grounds: a port under each part that returns to ground -----------
+    # --- grounds ----------------------------------------------------------
     w.append([gnd, (gnd[0] - 300, gnd[1]), (gnd[0] - 300, gnd[1] - 300)])
     pw.append((gnd[0] - 300, gnd[1] - 300, 3, 4, "GND"))
     for term in (c1g, c2g, r1g, r2g):

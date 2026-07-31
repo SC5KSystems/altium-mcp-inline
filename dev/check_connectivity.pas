@@ -45,6 +45,20 @@ begin
     Obj1.SchIterator_Destroy(Obj2);
     SandboxLog('wires = ' + IntToStr(I4) + '  segments = ' + IntToStr(List1.Count));
 
+    // Junction coordinates go in the same list, tagged 'J' so they cannot be
+    // read as a segment. A pin sitting mid-span on a wire IS connected when a
+    // junction marks the tee - that is a deliberate shunt tap, not a short.
+    Obj2 := Obj1.SchIterator_Create;
+    Obj2.AddFilter_ObjectSet(MkSet(eJunction));
+    Obj3 := Obj2.FirstSchObject;
+    while (Obj3 <> nil) do
+    begin
+        List1.Add('J|' + IntToStr(CoordToMils(Obj3.Location.X)) + '|' +
+                  IntToStr(CoordToMils(Obj3.Location.Y)));
+        Obj3 := Obj2.NextSchObject;
+    end;
+    Obj1.SchIterator_Destroy(Obj2);
+
     // ---- test every pin's true connection point --------------------------
     I4 := 0;   // pins with a wire passing through (bad)
     I5 := 0;   // pins with no wire ending on them
@@ -88,14 +102,20 @@ begin
                         S1 := 'X';
             end;
 
+            // a junction here turns "wire passes through" into a valid tap
+            if (S1 = 'X') then
+                if (List1.IndexOf('J|' + S4 + '|' + S5) >= 0) then S1 := 'TAP';
+
             S3 := Obj6.Designator.Text + '.' + Obj7.Name + ' (' + S4 + ',' + S5 + ')' +
                   '  ENDS=' + IntToStr(I1);
+            if (S1 = 'TAP') then
+                S3 := S3 + '  TAP (pin on a wire, junction present)';
             if (S1 = 'X') then
             begin
                 S3 := S3 + '  THRU=YES  <== wire passes through this pin';
                 I4 := I4 + 1;
             end;
-            if (I1 = 0) and (S1 <> 'X') then
+            if (I1 = 0) and (S1 = '') then
             begin
                 S3 := S3 + '  <== nothing connects here';
                 I5 := I5 + 1;
