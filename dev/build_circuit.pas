@@ -284,14 +284,25 @@ begin
     // hand-drawn sheet (dev/harvest_param_placement.pas), so generated parts
     // match house style. Justification is what makes a column line up -
     // setting position alone still leaves the text ragged.
-    // Stash the counters: the styling loop below reuses I4/I5 for
-    // component coordinates and would otherwise clobber them.
+    // Stash the counters: the styling loop below reuses I4/I5 and would
+    // otherwise clobber the placed-part and graphics totals.
     S3 := IntToStr(I4) + '|' + IntToStr(I5);
 
+    // Apply harvested parameter placement, keyed by LibReference.
+    // Offsets, Justification and Orientation come from real components on a
+    // hand-drawn sheet (dev/harvest_param_placement.pas). Justification is
+    // what makes a column line up; position alone leaves it ragged.
+    //
+    // The harvested offsets are RELATIVE SPACING - they are re-anchored here
+    // rather than applied raw, for two reasons found by inspection:
+    //   * raw offsets put a right-justified column over the capacitor body
+    //   * they also left the designator on the far side of the rail from the
+    //     rest of its own parameters, since its dy reaches above the top pin
+    // So the block keeps its harvested spacing and justification but is
+    // translated to clear the body and sit below the topmost pin.
     SandboxLog('applying harvested parameter placement');
     List2 := TStringList.Create;
-    if FileExists('C:\Users\Public\altium_mcp\param_placement.txt') then
-        List2.LoadFromFile('C:\Users\Public\altium_mcp\param_placement.txt');
+    if FileExists('C:\Users\Public\altium_mcp\param_placement.txt') then List2.LoadFromFile('C:\Users\Public\altium_mcp\param_placement.txt');
     SandboxLog('placement records = ' + IntToStr(List2.Count));
 
     Obj2 := TargetDoc.SchIterator_Create;
@@ -300,18 +311,46 @@ begin
     while (Obj6 <> nil) do
     begin
         S4 := Obj6.LibReference;
-        I4 := CoordToMils(Obj6.Location.X);
-        I5 := CoordToMils(Obj6.Location.Y);
 
-
+        // Scan the records ONCE, before I1/I2/I3 are reused for the body
+        // extent. Doing this after would clobber body-left with the loop
+        // counter and fling the text off the sheet.
         B1 := 0;
+        B1MAX := -999999;
         for I1 := 0 to List2.Count - 1 do
-            if (SbxField(List2[I1], 1) = S4) then B1 := 1;
+            if (SbxField(List2[I1], 1) = S4) then
+            begin
+                B1 := 1;
+                if (StrToInt(SbxField(List2[I1], 5)) > B1MAX) then
+                    B1MAX := StrToInt(SbxField(List2[I1], 5));
+            end;
 
         if (B1 = 1) then
         begin
-            // Hide everything first, then reveal exactly what the reference
-            // component showed - otherwise stray parameters stay scattered.
+            // Body extent EXCLUDING parameter text. Component.BoundingRectangle
+            // includes the text, so anchoring to it feeds back on itself and
+            // walks the block off the sheet; pins and graphics are stable.
+            I1 := 999999;
+            I2 := -999999;
+            I3 := -999999;
+            // Filter to drawable primitives. An unfiltered child iterator
+            // returns objects whose BoundingRectangle is not valid and kills
+            // the script.
+            Obj4 := Obj6.SchIterator_Create;
+            Obj4.AddFilter_ObjectSet(MkSet(ePin, eLine, eRectangle, eArc, ePolyline, eEllipse));
+            Obj7 := Obj4.FirstSchObject;
+            while (Obj7 <> nil) do
+            begin
+                Obj5 := Obj7.BoundingRectangle;
+                if (CoordToMils(Obj5.Left) < I1) then I1 := CoordToMils(Obj5.Left);
+                if (CoordToMils(Obj5.Right) > I2) then I2 := CoordToMils(Obj5.Right);
+                if (CoordToMils(Obj5.Top) > I3) then I3 := CoordToMils(Obj5.Top);
+                Obj7 := Obj4.NextSchObject;
+            end;
+            Obj6.SchIterator_Destroy(Obj4);
+            SandboxLog('  body ' + S4 + ' L=' + IntToStr(I1) + ' R=' + IntToStr(I2) + ' T=' + IntToStr(I3));
+
+            // hide everything, then reveal exactly what the reference showed
             Obj4 := Obj6.SchIterator_Create;
             Obj4.AddFilter_ObjectSet(MkSet(eParameter));
             Obj7 := Obj4.FirstSchObject;
@@ -322,25 +361,25 @@ begin
             end;
             Obj6.SchIterator_Destroy(Obj4);
 
-            for I1 := 0 to List2.Count - 1 do
+            I5 := I3 - 100;                    // block top, below the pins
+            for B1 := 0 to List2.Count - 1 do
             begin
-                S1 := List2[I1];
+                S1 := List2[B1];
                 if (SbxField(S1, 1) = S4) then
                 begin
-                    // Offsets stay relative to the component Location, as
-                    // harvested. Anchoring to BoundingRectangle instead does
-                    // NOT work: the bounding rectangle includes the parameter
-                    // text, so moving the text grows the box and the next pass
-                    // pushes it further - the block walks off the sheet.
                     S5 := SbxField(S1, 3);
-                    I3 := I4 + StrToInt(SbxField(S1, 4));
+                    if (StrToInt(SbxField(S1, 6)) = 2) or (StrToInt(SbxField(S1, 6)) = 5) or
+                       (StrToInt(SbxField(S1, 6)) = 8) then
+                        I4 := I1 - 50
+                    else
+                        I4 := I2 + 50;
+                    I2X := I5 - (B1MAX - StrToInt(SbxField(S1, 5)));
                     if (S5 = 'DESIGNATOR') then
                     begin
                         Obj6.Designator.Autoposition := False;
                         Obj6.Designator.Orientation := StrToInt(SbxField(S1, 7));
                         Obj6.Designator.Justification := StrToInt(SbxField(S1, 6));
-                        Obj6.Designator.MoveToXY(MilsToCoord(I3),
-                            MilsToCoord(I5 + StrToInt(SbxField(S1, 5))));
+                        Obj6.Designator.MoveToXY(MilsToCoord(I4), MilsToCoord(I2X));
                     end
                     else
                     begin
@@ -355,8 +394,7 @@ begin
                                 Obj7.Autoposition := False;
                                 Obj7.Orientation := StrToInt(SbxField(S1, 7));
                                 Obj7.Justification := StrToInt(SbxField(S1, 6));
-                                Obj7.MoveToXY(MilsToCoord(I3),
-                                    MilsToCoord(I5 + StrToInt(SbxField(S1, 5))));
+                                Obj7.MoveToXY(MilsToCoord(I4), MilsToCoord(I2X));
                             end;
                             Obj7 := Obj4.NextSchObject;
                         end;

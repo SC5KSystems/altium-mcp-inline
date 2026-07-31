@@ -22,7 +22,7 @@ var
     // declarations, so experiments reuse these)
     S1, S2, S3, S4, S5 : String;
     I1, I2, I3, I4, I5 : Integer;
-    B1         : Integer;   // reused as a loop counter by some experiments
+    B1, B1MAX, I2X : Integer;   // reused as loop counters by some experiments
     Obj1, Obj2, Obj3, Obj4, Obj5, Obj6, Obj7 : IDispatch;
     List1, List2 : TStringList;
     TargetDoc  : ISch_Document;
@@ -276,13 +276,59 @@ begin
             end;
             Obj1.SchIterator_Destroy(Obj2);
 
+            // ---- net labels: a label only names a wire if it TOUCHES it ----------
+            // A label sitting near a wire looks right and names nothing, so check that
+            // each one lands on a segment (endpoint or interior).
+            SandboxLog('--- net labels ---');
+            I2 := 0;
+            Obj2 := Obj1.SchIterator_Create;
+            Obj2.AddFilter_ObjectSet(MkSet(eNetLabel));
+            Obj3 := Obj2.FirstSchObject;
+            while (Obj3 <> nil) do
+            begin
+                S4 := IntToStr(CoordToMils(Obj3.Location.X));
+                S5 := IntToStr(CoordToMils(Obj3.Location.Y));
+                S1 := '';
+                for I1 := 0 to List1.Count - 1 do
+                begin
+                    S2 := List1[I1];
+                    if (SbxField(S2, 0) <> 'J') then
+                    begin
+                        if ((SbxField(S2, 0) = S4) and (SbxField(S2, 1) = S5)) then S1 := 'ON';
+                        if ((SbxField(S2, 2) = S4) and (SbxField(S2, 3) = S5)) then S1 := 'ON';
+                        if ((SbxField(S2, 0) = S4) and (SbxField(S2, 2) = S4)) then
+                            if (((StrToInt(SbxField(S2, 1)) <= StrToInt(S5)) and (StrToInt(SbxField(S2, 3)) >= StrToInt(S5))) or
+                                ((StrToInt(SbxField(S2, 3)) <= StrToInt(S5)) and (StrToInt(SbxField(S2, 1)) >= StrToInt(S5)))) then
+                                S1 := 'ON';
+                        if ((SbxField(S2, 1) = S5) and (SbxField(S2, 3) = S5)) then
+                            if (((StrToInt(SbxField(S2, 0)) <= StrToInt(S4)) and (StrToInt(SbxField(S2, 2)) >= StrToInt(S4))) or
+                                ((StrToInt(SbxField(S2, 2)) <= StrToInt(S4)) and (StrToInt(SbxField(S2, 0)) >= StrToInt(S4)))) then
+                                S1 := 'ON';
+                    end;
+                end;
+                S3 := 'netlabel "' + Obj3.Text + '" (' + S4 + ',' + S5 + ')';
+                if (S1 = 'ON') then
+                    S3 := S3 + '  on a wire'
+                else
+                begin
+                    S3 := S3 + '  <== NOT touching any wire - names nothing';
+                    I2 := I2 + 1;
+                end;
+                SandboxLog('  ' + S3);
+                List2.Add(S3);
+                Obj3 := Obj2.NextSchObject;
+            end;
+            Obj1.SchIterator_Destroy(Obj2);
+            SandboxLog('net labels off-wire = ' + IntToStr(I2));
+
             List2.SaveToFile('C:\Users\Public\altium_mcp\connectivity.txt');
             SandboxLog('pins with wire passing through = ' + IntToStr(I4));
             SandboxLog('pins with nothing connected    = ' + IntToStr(I5));
             SandboxLog('suspect junctions              = ' + IntToStr(I3));
             ResultText := '{"doc": "' + Obj1.DocumentName + '", "pins_shorted_through": ' + IntToStr(I4) +
                           ', "pins_unconnected": ' + IntToStr(I5) +
-                          ', "suspect_junctions": ' + IntToStr(I3) + '}';
+                          ', "suspect_junctions": ' + IntToStr(I3) +
+                          ', "netlabels_off_wire": ' + IntToStr(I2) + '}';
             List1.Free;
             List2.Free;
         end;

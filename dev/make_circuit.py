@@ -50,7 +50,7 @@ PIN_MAP = Path("C:/Users/Public/altium_mcp/pin_map.txt")
 # the origin and only 110 mil apart).
 RAIL_Y = 4600     # input rail
 VOUT_Y = 5000     # output rail (LED+)
-FB_Y = 2600       # LED- / current-set node
+FB_Y = 3000       # LED- node: the FB pin's own height, so FB exits straight
 
 # Locations are the symbol ORIGIN. The hot-end offsets below were MEASURED from
 # a placement run, not predicted, and parts are positioned so that each shunt
@@ -74,7 +74,7 @@ PARTS = [
     ("C1", "2140-0021", 2100, 4300, 1, 0),  # top hot (2000,4600) ON the rail
     ("C2", "2140-0026", 5000, 4700, 1, 0),  # top hot (4900,5000) ON the LED+ rail
     ("J1", "6101-0041", 5600, 4900, 0, 0),  # mirror=1 would flip pins to x-200  # pin1 (5600,5000) LED+, pin2 (5600,4900) LED-
-    ("R1", "1112-0082", 4500, 2000, 1, 0),  # top hot (4400,2600) ON the sense node
+    ("R1", "1112-0082", 4500, 2400, 1, 0),  # top hot (4400,3000) ON the LED- line
     ("R2", "1112-0004", 2000, 2700, 1, 0),  # top hot (1900,3300) at ADIM height
 ]
 
@@ -194,17 +194,19 @@ def wiring(pin):
     # --- VOUT -> LED+ rail -> C2 -> J1 ------------------------------------
     w.append([vout, (vout_x, vout[1]), (vout_x, VOUT_Y), j_hi])
     j.append((c2t[0], VOUT_Y))
-    n.append((vout_x + 200, VOUT_Y + 100, 0, "LED+"))
+    n.append((vout_x + 500, VOUT_Y, 0, "LED+"))
 
-    # --- J1 LED- -> current-set node -> FB --------------------------------
-    w.append([j_lo, (j_lo[0], FB_Y), r1t])
-    w.append([fb, (fb_x, fb[1]), r1t])
+    # --- FB -> LED- -> J1 -------------------------------------------------
+    # Straight out of FB, one riser, into the header. R1 taps the same line, so
+    # there is no dog-leg down and back up.
+    led_x = j_lo[0] - 300
+    w.append([fb, (led_x, FB_Y), (led_x, j_lo[1]), j_lo])
     j.append(r1t)
-    n.append((fb_x + 200, FB_Y + 100, 0, "LED-"))
+    n.append((r1t[0] + 400, FB_Y, 0, "LED-"))
 
     # --- ADIM: net label + pulldown ---------------------------------------
     w.append([adim, r2t])
-    n.append((r2t[0] + 200, adim[1] + 100, 0, "BL_DIM"))
+    n.append((r2t[0] + 250, adim[1], 0, "BL_DIM"))
 
     # --- grounds ----------------------------------------------------------
     w.append([gnd, (gnd[0] - 300, gnd[1]), (gnd[0] - 300, gnd[1] - 300)])
