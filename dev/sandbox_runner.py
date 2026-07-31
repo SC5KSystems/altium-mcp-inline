@@ -211,10 +211,17 @@ def run(timeout=120, quiet=False):
         print("-" * 62)
         print(f">> Script STOPPED after: {lines[-1] if lines else '(nothing)'}")
         print(">> The statement AFTER that step is what crashed or paused.")
-        print(">> Clearing the paused debugger (Ctrl+F3) so the next run works...")
-        unwedge(verbose=False)
+        # Recover automatically and PROVE it worked, so the next experiment is
+        # not a false negative. unwedge() dispatches EditScript:Stop into the
+        # running instance (no window focus needed) and verifies by running a
+        # probe script; Ctrl+F3 is only a fallback.
         for shot in capture_script_editor():
             print(f">> Altium window captured (look for the paused line): {shot}")
+        print(">> Clearing the paused debugger...")
+        if unwedge(verbose=False):
+            print(">> Executor recovered and VERIFIED alive - re-run the experiment.")
+        else:
+            print(">> Could not clear the debugger; re-run with --auto-restart.")
     else:
         print("STEP LOG: (missing - the script never started)")
         print(">> Usually a COMPILE error (see dialog text above), or a")
