@@ -77,7 +77,23 @@ LED- leaves FB at 3000, one riser near the connector, done
 A signal that leaves a pin, jogs down, runs across and comes back up is a
 routing failure, not a style choice.
 
-## 6. Net labels must touch the wire
+## 6. A wire must never cross a component body
+
+A shunt part hanging off a rail occupies vertical space *below* it. If another
+net runs through that band, the wire is drawn straight through the symbol - it
+looks connected to the part and is not.
+
+Concretely: LED+ at y=3300 with C2 hanging 300 mil below it occupies
+y=2900..3200, and LED- ran at y=3000. The fix was not to bend the wire but to
+turn LED- down to the left of C2 and drop LED+ to its right, so neither
+crosses.
+
+Before placing a shunt, check what else routes through the band it will
+occupy. `check_connectivity.pas` now tests every axis-aligned segment against
+each component's DRAWN body (graphics only - wires legitimately end on pins,
+which stick out past the body).
+
+## 7. Net labels must touch the wire
 
 A label near a wire names nothing. Place it **on** a wire coordinate.
 `check_connectivity.pas` tests each label against every segment (endpoint or
@@ -87,7 +103,7 @@ Caveat: that proves the geometric precondition, not the compiled net name.
 Confirming the net Altium actually assigns needs the project compiled, which a
 free document cannot do.
 
-## 7. Parameter text: harvest it, do not invent it
+## 8. Parameter text: harvest it, do not invent it
 
 Placement is an offset from the component's `Location`, plus `Justification`
 and `Orientation` — the method in the user's `CopyParamPlacement.pas`.
@@ -126,7 +142,7 @@ Iter.AddFilter_ObjectSet(MkSet(ePin, eLine, eRectangle, eArc, ePolyline, eEllips
 Unfiltered, the iterator returns objects whose `BoundingRectangle` is invalid
 and kills the script.
 
-## 8. Mirroring: `Mirror(Axis)`, not `IsMirrored`
+## 9. Mirroring: `Mirror(Axis)`, not `IsMirrored`
 
 | Call | Effect |
 |---|---|
@@ -138,13 +154,13 @@ Check which way a symbol's pins already point before rotating: `HEADER-2X1`
 points left natively, so rotating it 180° puts the body between the incoming
 wires and its own connection points.
 
-## 9. Rotating a part rotates its text
+## 10. Rotating a part rotates its text
 
 Straighten designator/comment/parameters **after** any parameter-position
 reset, not before — the reset re-derives placement from the body and discards
 an orientation assigned earlier.
 
-## 10. Verify with something that does not share the builder's assumptions
+## 11. Verify with something that does not share the builder's assumptions
 
 The original `check_connectivity.pas` computed hot ends with the **same
 formula as the builder**. They agreed with each other while both could have
@@ -160,6 +176,7 @@ What the checker distinguishes now:
 | wire crossing a pin, no junction | **short** |
 | junction with < 3 branches | decoration — usually an overshoot |
 | net label not on a wire | **names nothing** |
+| wire crossing a drawn body | **routed through a symbol** |
 
 Branch counting: a wire *ending* at a point is one branch, a wire *passing
 through* is two, a pin landing there is one more.
@@ -167,9 +184,13 @@ through* is two, a pin landing there is one more.
 ## DelphiScript hazards that bit repeatedly
 
 - **Shared scratch variables.** The sandbox convention (`I1..I5`, `S1..S5`) is
-  a trap: reusing `I1` as a loop counter after storing a coordinate in it
-  silently produced an anchor of `24 - 50 = -26` and flung text off-sheet.
-  Twice. An MCP port should use properly scoped locals.
+  the single most repeated bug here - THREE times in one session, each time
+  silent. Reusing `I1` as a loop counter after storing a coordinate in it gave
+  an anchor of `24 - 50 = -26` and flung text off-sheet; reusing `I4`/`I5` for
+  bounding-box edges overwrote result counters and reported `1840` pins
+  shorted. Every occurrence produced plausible-looking wrong output rather
+  than an error. Stash a result before any loop that might reuse its variable
+  (`SavedCounts`), and an MCP port should use properly scoped locals.
 - `try/except` does **not** catch runtime errors; a bad call leaves the script
   paused in the debugger and every later run silently does nothing. Recover
   with `X2.EXE -REditScript:Stop` (see [`unwedge.py`](unwedge.py)), and verify

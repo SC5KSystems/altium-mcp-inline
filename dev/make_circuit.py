@@ -74,10 +74,10 @@ PARTS = [
     ("U1", "4134-0002", 2400, 3000, 0, 0),  # VIN(2400,3600) SW(3900,3600) FB(3900,3000)
     ("L1", "3210-0028", 2900, 4100, 0, 0),  # pins (2900,4100)-(3500,4100) on the rail
     ("C1", "2140-0021", 2100, 3700, 1, 0),  # top hot (2000,4000) = RAIL_Y - TAP_GAP
-    ("C2", "2140-0026", 5300, 2900, 1, 0),  # top hot (5200,3200); right of R1's text
-    ("J1", "6101-0041", 5600, 3200, 0, 0),  # pin2 (5600,3200) LED-, pin1 (5600,3300) LED+
-    ("R1", "1112-0082", 4200, 2300, 1, 0),  # top hot (4100,2900); left of C2's text
-    ("R2", "1112-0004", 2000, 2700, 1, 0),  # top hot (1900,3300) at ADIM height
+    ("C2", "2140-0026", 5300, 2900, 1, 0),  # top hot (5200,3200), taps LED+ at 5200
+    ("J1", "6101-0041", 5600, 2600, 0, 0),  # pin2 (5600,2600) LED-, pin1 (5600,2700) LED+
+    ("R1", "1112-0082", 4100, 2300, 1, 0),  # top hot (4000,2900), taps LED- at 4000
+    ("R2", "1112-0004", 2000, 2600, 1, 0),  # top hot (1900,3200), one grid below ADIM
 ]
 
 
@@ -178,7 +178,7 @@ def wiring(pin):
                             ("L1", l_a[1], RAIL_Y),
                             ("C2 top", c2t[1], LEDP_Y - TAP_GAP),
                             ("R1 top", r1t[1], FB_Y - TAP_GAP),
-                            ("J1 LED+", j_hi[1], LEDP_Y)):
+                            ("R2 top", r2t[1], adim[1] - TAP_GAP)):
         if got != want:
             raise SystemExit(f"{what} sits at y={got}, expected y={want}; "
                              f"move the part rather than bending the wire to it")
@@ -204,19 +204,27 @@ def wiring(pin):
     # --- L1 -> SW: drop clear of the pin column, then in --------------------
     w.append([l_b, (sw[0] + 2 * GRID, RAIL_Y), (sw[0] + 2 * GRID, sw[1]), sw])
 
-    # --- VOUT -> LED+ -> J1, straight out at VOUT's own height -------------
-    w.append([vout, j_hi])
+    # --- VOUT -> LED+ -> J1 -------------------------------------------------
+    # Both nets leave their pin at its own height and turn down to the header.
+    # C2 hangs off LED+ and occupies 300 mil BELOW it, which is exactly where
+    # LED- used to run - a wire straight through the capacitor body. So LED-
+    # turns down well to the left of C2, and LED+ drops to its right.
+    ledp_x = c2t[0] + 2 * GRID
+    w.append([vout, (ledp_x, LEDP_Y), (ledp_x, j_hi[1]), j_hi])
     tap(c2t, LEDP_Y)
-    n.append(((vout[0] + j_hi[0]) // 2 + 200, LEDP_Y, 0, "LED+"))
+    n.append((c2t[0] - 5 * GRID, LEDP_Y, 0, "LED+"))
 
-    # --- FB -> LED- -> J1, straight out at FB's own height ------------------
-    # riser sits clear of C2's body, which reaches to its own Location.x
-    w.append([fb, (j_lo[0] - 2 * GRID, FB_Y), (j_lo[0] - 2 * GRID, j_lo[1]), j_lo])
+    # --- FB -> LED- -> J1 ---------------------------------------------------
+    ledm_x = r1t[0] + 6 * GRID
+    w.append([fb, (ledm_x, FB_Y), (ledm_x, j_lo[1]), j_lo])
     tap(r1t, FB_Y)
-    n.append((r1t[0] + 500, FB_Y, 0, "LED-"))
+    n.append((r1t[0] + 3 * GRID, FB_Y, 0, "LED-"))
 
     # --- ADIM: net label + pulldown ----------------------------------------
-    w.append([adim, r2t])
+    # R2 drops one grid below the pin row rather than sitting level with it,
+    # so there is a visible wire into its pin. Route the corner explicitly -
+    # a two-point wire between pins at different heights is diagonal.
+    w.append([adim, (r2t[0], adim[1]), r2t])
     n.append((r2t[0] + 250, adim[1], 0, "BL_DIM"))
 
     # --- grounds: one grid across, one grid down ---------------------------

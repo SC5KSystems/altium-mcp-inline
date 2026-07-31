@@ -198,6 +198,71 @@ begin
     end;
     Obj1.SchIterator_Destroy(Obj2);
 
+    // Stash the pin counters: the body-crossing scan below reuses I4/I5 for
+    // bounding-box edges. Reusing a variable that still holds a result is the
+    // single most repeated bug in this codebase - see SCHEMATIC_CONVENTIONS.md.
+    SavedCounts := IntToStr(I4) + '|' + IntToStr(I5);
+
+    // ---- wires must not cross a component BODY ---------------------------
+    // A wire routed through a symbol looks connected to it and is not. The
+    // body here is the DRAWN outline only - graphics, no pins - because wires
+    // legitimately end on pins, which stick out past the body.
+    SandboxLog('--- wires through component bodies ---');
+    I3 := 0;
+    Obj2 := Obj1.SchIterator_Create;
+    Obj2.AddFilter_ObjectSet(MkSet(eSchComponent));
+    Obj6 := Obj2.FirstSchObject;
+    while (Obj6 <> nil) do
+    begin
+        I4 := 999999;   // left
+        I5 := -999999;  // right
+        B1 := 999999;   // bottom
+        I2 := -999999;  // top
+        Obj4 := Obj6.SchIterator_Create;
+        Obj4.AddFilter_ObjectSet(MkSet(eLine, eRectangle, eArc, ePolyline, eEllipse));
+        Obj7 := Obj4.FirstSchObject;
+        while (Obj7 <> nil) do
+        begin
+            Obj5 := Obj7.BoundingRectangle;
+            if (CoordToMils(Obj5.Left) < I4) then I4 := CoordToMils(Obj5.Left);
+            if (CoordToMils(Obj5.Right) > I5) then I5 := CoordToMils(Obj5.Right);
+            if (CoordToMils(Obj5.Bottom) < B1) then B1 := CoordToMils(Obj5.Bottom);
+            if (CoordToMils(Obj5.Top) > I2) then I2 := CoordToMils(Obj5.Top);
+            Obj7 := Obj4.NextSchObject;
+        end;
+        Obj6.SchIterator_Destroy(Obj4);
+
+        if (I4 < 999999) then
+            for I1 := 0 to List1.Count - 1 do
+            begin
+                S2 := List1[I1];
+                if (SbxField(S2, 0) <> 'J') then
+                begin
+                    // horizontal segment through the body?
+                    if (SbxField(S2, 1) = SbxField(S2, 3)) then
+                        if (StrToInt(SbxField(S2, 1)) > B1) and (StrToInt(SbxField(S2, 1)) < I2) then
+                            if (StrToInt(SbxField(S2, 0)) < I5) and (StrToInt(SbxField(S2, 2)) > I4) then
+                            begin
+                                SandboxLog('  wire crosses ' + Obj6.Designator.Text + ' body at y=' + SbxField(S2, 1));
+                                List2.Add('BODYCROSS|' + Obj6.Designator.Text + '|' + S2);
+                                I3 := I3 + 1;
+                            end;
+                    // vertical segment through the body?
+                    if (SbxField(S2, 0) = SbxField(S2, 2)) then
+                        if (StrToInt(SbxField(S2, 0)) > I4) and (StrToInt(SbxField(S2, 0)) < I5) then
+                            if (StrToInt(SbxField(S2, 1)) < I2) and (StrToInt(SbxField(S2, 3)) > B1) then
+                            begin
+                                SandboxLog('  wire crosses ' + Obj6.Designator.Text + ' body at x=' + SbxField(S2, 0));
+                                List2.Add('BODYCROSS|' + Obj6.Designator.Text + '|' + S2);
+                                I3 := I3 + 1;
+                            end;
+                end;
+            end;
+        Obj6 := Obj2.NextSchObject;
+    end;
+    Obj1.SchIterator_Destroy(Obj2);
+    SandboxLog('wires crossing a component body = ' + IntToStr(I3));
+
     // ---- net labels: a label only names a wire if it TOUCHES it ----------
     // A label sitting near a wire looks right and names nothing, so check that
     // each one lands on a segment (endpoint or interior).
@@ -247,10 +312,11 @@ begin
     SandboxLog('pins with wire passing through = ' + IntToStr(I4));
     SandboxLog('pins with nothing connected    = ' + IntToStr(I5));
     SandboxLog('suspect junctions              = ' + IntToStr(I3));
-    ResultText := '{"doc": "' + Obj1.DocumentName + '", "pins_shorted_through": ' + IntToStr(I4) +
-                  ', "pins_unconnected": ' + IntToStr(I5) +
+    ResultText := '{"doc": "' + Obj1.DocumentName + '", "pins_shorted_through": ' + SbxField(SavedCounts, 0) +
+                  ', "pins_unconnected": ' + SbxField(SavedCounts, 1) +
                   ', "suspect_junctions": ' + IntToStr(I3) +
-                  ', "netlabels_off_wire": ' + IntToStr(I2) + '}';
+                  ', "netlabels_off_wire": ' + IntToStr(I2) +
+                  ', "wires_through_bodies": ' + IntToStr(I3) + '}';
     List1.Free;
     List2.Free;
 end;
