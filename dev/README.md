@@ -26,11 +26,21 @@ hostile to automation:
 
 ## Recovering a wedged executor
 
-- `python dev/unwedge.py` sends Altium's Stop Debugging shortcut (Ctrl+F3).
-  Fast (~2s) but it only lands when the **script editor tab is the active
-  document** in Altium - keep `Sandbox.pas` focused for this to work.
-- `--auto-restart` on the runner force-restarts Altium instead (~60-90s,
-  kills X2.EXE, unsaved Altium work is lost). Guaranteed, unattended.
+- `python dev/unwedge.py` dispatches Altium's own Stop Debugging process into
+  the running instance:
+
+      X2.EXE -REditScript:Stop
+
+  Same channel the runner uses to launch scripts, so it needs no window focus
+  and no synthetic keystrokes. It then **verifies** recovery by running a probe
+  script and waiting for output - a wedge is defined by scripts silently doing
+  nothing, so anything less is a guess. Ctrl+F3 remains only as a fallback; it
+  reaches the debugger solely when the script editor is the active document,
+  which is why it used to fail silently while reporting success.
+- The runner calls this automatically on every wedge and says whether the
+  executor actually came back.
+- `--auto-restart` force-restarts Altium as a last resort (~60-90s, kills
+  X2.EXE, unsaved Altium work is lost).
 
 ## Diagnosing failures
 
@@ -71,8 +81,13 @@ python dev/sandbox_runner.py my_experiment.pas [timeout] [--auto-restart]
 
 Experiment body rules: assign findings to `ResultText`; Pascal has no inline
 declarations, so reuse the scratch variables declared in `Sandbox.pas`
-(`S1..S3`, `I1..I3`, `B1`, `Obj1..Obj5`, `List1`, `IntMan`, `DbDoc`) or add
-more there.
+(`S1..S5`, `I1..I5`, `B1`, `Obj1..Obj7`, `List1`, `List2`, `IntMan`, `DbDoc`)
+or add more there.
+
+**These shared scratch variables are a hazard**, not a convenience. Reusing
+one as a loop counter after storing a coordinate in it produced a silently
+wrong anchor twice in one session. Track what each holds across a whole
+experiment, and prefer distinct names for values that must survive a loop.
 
 Put risky reads (enum properties, anything that might not exist on this
 install) at the **end** of an experiment. `SandboxLog` flushes on every call,
