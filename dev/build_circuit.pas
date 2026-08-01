@@ -251,7 +251,9 @@ begin
                                    MilsToCoord(StrToInt(SbxField(S1, 2))));
             Obj5.Orientation := StrToInt(SbxField(S1, 3));
             Obj5.Style := StrToInt(SbxField(S1, 4));
-            Obj5.ShowNetName := True;
+            // Field 6 = show the net name. Ground ports hide it: the label
+            // renders below the symbol and crowds any wire running under it.
+            Obj5.ShowNetName := (SbxField(S1, 6) = '1');
             Obj5.Text := SbxField(S1, 5);
             TargetDoc.RegisterSchObjectInContainer(Obj5);
             SchServer.RobotManager.SendMessage(TargetDoc.I_ObjectAddress, c_BroadCast,

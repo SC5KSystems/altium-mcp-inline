@@ -93,7 +93,24 @@ occupy. `check_connectivity.pas` now tests every axis-aligned segment against
 each component's DRAWN body (graphics only - wires legitimately end on pins,
 which stick out past the body).
 
-## 7. Net labels must touch the wire
+## 7. Power ports: harvest the style, and leave room for the label
+
+Do not guess between the ground symbols. Read what the house style uses from a
+real sheet (`ePowerGndPower`=4, `ePowerGndSignal`=5, `ePowerGndEarth`=6 are
+easy to confuse, and the wrong one looks plausible):
+
+| Net | Style | Orientation | ShowNetName |
+|---|---|---|---|
+| GND | **5** `ePowerGndSignal` — digital ground | 3 (down) | False |
+| supply rails | **2** `ePowerBar` | 1 (up) | True |
+
+**`ShowNetName := False` does not hide the label.** It reads back as False and
+Altium still draws "GND" below the symbol. So a ground port always occupies
+roughly 300 mil below itself, and **no wire may be routed through that band** —
+the label crowds it and looks like a connection. Either move the part clear of
+the run, or drop the crossing wire further away.
+
+## 8. Net labels must touch the wire
 
 A label near a wire names nothing. Place it **on** a wire coordinate.
 `check_connectivity.pas` tests each label against every segment (endpoint or
@@ -103,7 +120,7 @@ Caveat: that proves the geometric precondition, not the compiled net name.
 Confirming the net Altium actually assigns needs the project compiled, which a
 free document cannot do.
 
-## 8. Parameter text: harvest it, do not invent it
+## 9. Parameter text: harvest it, do not invent it
 
 Placement is an offset from the component's `Location`, plus `Justification`
 and `Orientation` — the method in the user's `CopyParamPlacement.pas`.
@@ -142,7 +159,7 @@ Iter.AddFilter_ObjectSet(MkSet(ePin, eLine, eRectangle, eArc, ePolyline, eEllips
 Unfiltered, the iterator returns objects whose `BoundingRectangle` is invalid
 and kills the script.
 
-## 9. Mirroring: `Mirror(Axis)`, not `IsMirrored`
+## 10. Mirroring: `Mirror(Axis)`, not `IsMirrored`
 
 | Call | Effect |
 |---|---|
@@ -154,13 +171,13 @@ Check which way a symbol's pins already point before rotating: `HEADER-2X1`
 points left natively, so rotating it 180° puts the body between the incoming
 wires and its own connection points.
 
-## 10. Rotating a part rotates its text
+## 11. Rotating a part rotates its text
 
 Straighten designator/comment/parameters **after** any parameter-position
 reset, not before — the reset re-derives placement from the body and discards
 an orientation assigned earlier.
 
-## 11. Verify with something that does not share the builder's assumptions
+## 12. Verify with something that does not share the builder's assumptions
 
 The original `check_connectivity.pas` computed hot ends with the **same
 formula as the builder**. They agreed with each other while both could have

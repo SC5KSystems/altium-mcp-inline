@@ -22,7 +22,7 @@ Spec format (pipe-delimited, one record per line):
     WIRE|x1|y1|x2|y2[|x3|y3...]
     JUNCTION|x|y
     NETLABEL|x|y|<orientation>|<text>
-    POWER|x|y|<orientation>|<style>|<text>
+    POWER|x|y|<orientation>|<style>|<text>|<show_net_name>
     NOTE|x|y|<text>
 All coordinates are in mils.
 """
@@ -48,6 +48,17 @@ PIN_MAP = Path("C:/Users/Public/altium_mcp/pin_map.txt")
 # from a placement run's pin_map.txt rather than predicted - a rotated symbol's
 # pin offsets are not obvious (a rotated CAP-NP puts its pins 100 mil left of
 # the origin and only 110 mil apart).
+# Power-port styles read out of a hand-drawn sheet, not guessed. The house
+# style uses the DIGITAL/signal ground triangle and hides its net name; the
+# earth-ground symbol with a visible "GND" label is wrong on both counts, and
+# the label also collided with wires running under the port.
+GND_STYLE = 5     # ePowerGndSignal - digital ground
+RAIL_STYLE = 2    # ePowerBar - supply rails
+# NOTE: ShowNetName=False does NOT hide a power port's label - it reads back
+# False and Altium still draws "GND". So the label always occupies ~200 mil
+# BELOW the port, and nothing may be routed through that band.
+GND_LABEL_BAND = 300
+
 GRID = 100        # schematic snap grid; all spacing is a multiple of this
 TAP_GAP = GRID    # wire between a shunt pin and the node it taps
 GND_DROP = GRID   # wire from a pin down to its ground port
@@ -73,9 +84,9 @@ PARTS = [
     # desig, corp part number,  x,     y,    orient, mirror
     ("U1", "4134-0002", 2400, 3000, 0, 0),  # VIN(2400,3600) SW(3900,3600) FB(3900,3000)
     ("L1", "3210-0028", 2900, 4100, 0, 0),  # pins (2900,4100)-(3500,4100) on the rail
-    ("C1", "2140-0021", 2100, 3700, 1, 0),  # top hot (2000,4000) = RAIL_Y - TAP_GAP
+    ("C1", "2140-0021", 1800, 3700, 1, 0),  # x clear of the ADIM run
     ("C2", "2140-0026", 5300, 2900, 1, 0),  # top hot (5200,3200), taps LED+ at 5200
-    ("J1", "6101-0041", 5600, 2600, 0, 0),  # pin2 (5600,2600) LED-, pin1 (5600,2700) LED+
+    ("J1", "6101-0041", 5600, 2300, 0, 0),  # LED- at 2300, clear of C2's GND label
     ("R1", "1112-0082", 4100, 2300, 1, 0),  # top hot (4000,2900), taps LED- at 4000
     ("R2", "1112-0004", 2000, 2600, 1, 0),  # top hot (1900,3200), one grid below ADIM
 ]
@@ -192,14 +203,14 @@ def wiring(pin):
 
     def to_ground(term):
         w.append([term, (term[0], term[1] - GND_DROP)])
-        pw.append((term[0], term[1] - GND_DROP, 3, 4, "GND"))
+        pw.append((term[0], term[1] - GND_DROP, 3, GND_STYLE, "GND", 0))
 
     # --- input rail: 5V0 -> C1 -> U1.VIN -> L1 ---------------------------
     w.append([(1400, RAIL_Y), l_a])
     w.append([vin, (vin[0], RAIL_Y)])
     j.append((vin[0], RAIL_Y))
     tap(c1t, RAIL_Y)
-    pw.append((1400, RAIL_Y, 1, 2, "5V0"))
+    pw.append((1400, RAIL_Y, 1, RAIL_STYLE, "5V0", 1))
 
     # --- L1 -> SW: drop clear of the pin column, then in --------------------
     w.append([l_b, (sw[0] + 2 * GRID, RAIL_Y), (sw[0] + 2 * GRID, sw[1]), sw])
@@ -229,7 +240,7 @@ def wiring(pin):
 
     # --- grounds: one grid across, one grid down ---------------------------
     w.append([gnd, (gnd[0] - GRID, gnd[1]), (gnd[0] - GRID, gnd[1] - GND_DROP)])
-    pw.append((gnd[0] - GRID, gnd[1] - GND_DROP, 3, 4, "GND"))
+    pw.append((gnd[0] - GRID, gnd[1] - GND_DROP, 3, GND_STYLE, "GND", 0))
     for term in (c1g, c2g, r1g, r2g):
         to_ground(term)
 
@@ -249,8 +260,8 @@ def main():
             lines.append(f"JUNCTION|{x}|{y}")
         for x, y, o, t in n:
             lines.append(f"NETLABEL|{x}|{y}|{o}|{t}")
-        for x, y, o, style, t in pw:
-            lines.append(f"POWER|{x}|{y}|{o}|{style}|{t}")
+        for x, y, o, style, t, show in pw:
+            lines.append(f"POWER|{x}|{y}|{o}|{style}|{t}|{show}")
         lines.append("NOTE|1400|5600|LED Backlight Driver - TPS923611 synchronous boost")
         lines.append("NOTE|1400|5450|LED string is in the display module, connected via J1")
         lines.append("NOTE|1400|5300|I_LED set by R1 (I = V_FB / R1) - confirm V_FB against the datasheet")
