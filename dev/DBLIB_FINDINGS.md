@@ -351,3 +351,25 @@ command can be found this way rather than guessed.
   remains the approach; path 1 above makes Altium do it.)
 - Placing onto an existing project sheet rather than a scratch document, and
   confirming placement coordinates (the test part landed at the sheet corner).
+
+
+## Only .DbLib is supported
+
+This tooling supports **.DbLib only**. The other Altium database library types
+are NOT implemented and should not be assumed to work:
+
+| Type | Why it is not supported |
+|---|---|
+| **.SVNDbLib** | Same INI + ConnectionString shape, models versioned in Subversion. Probably a small change, but untested - no SVNDbLib was available. |
+| **.DbLink** | Different feature entirely: syncs parameters onto components that are ALREADY placed. It cannot be a placement source. |
+| **Altium 365 / Workspace** | Managed Items with revisions and no ConnectionString. Needs a different API altogether. |
+
+Note also that the SQL issued here uses T-SQL dialect (`SELECT TOP n`,
+`[bracket]` quoting). A .DbLib ConnectionString can point at any OLEDB source,
+so a MySQL or PostgreSQL backend would need those statements rephrased
+(`LIMIT`, different quoting) even though the connection itself would work.
+
+**Building any of this out needs someone familiar with the database type in
+question.** It cannot be written blind and verified against a .DbLib - the
+whole point of the failures recorded above is that plausible-looking untested
+code is worse than none.
