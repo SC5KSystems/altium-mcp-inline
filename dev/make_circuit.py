@@ -66,8 +66,10 @@ GND_DROP = GRID   # wire from a pin down to its ground port
 # Rails are packed just clear of the pin rows they serve rather than floated
 # high above the part - tall empty risers are wasted sheet, not clarity.
 #   U1 pin rows:  FB 3000, VOUT 3300, SW 3600
-RAIL_Y = 4100     # 5V0 input rail. Not tighter: C1 hangs below it and its
-                  # text block needs room before R2's block starts.
+RAIL_Y = 4300     # 5V0 input rail. A decoupling cap belongs BESIDE the pin it
+                  # decouples, so C1 sits next to VIN rather than off to the
+                  # left - which needs the rail 200 higher, so C1's ground
+                  # label still clears the ADIM run at y=3300.
 LEDP_Y = 3300     # LED+ runs straight out of VOUT at its own height
 FB_Y = 3000       # LED- runs straight out of FB at its own height
 
@@ -83,8 +85,8 @@ FB_Y = 3000       # LED- runs straight out of FB at its own height
 PARTS = [
     # desig, corp part number,  x,     y,    orient, mirror
     ("U1", "4134-0002", 2400, 3000, 0, 0),  # VIN(2400,3600) SW(3900,3600) FB(3900,3000)
-    ("L1", "3210-0028", 2900, 4100, 0, 0),  # pins (2900,4100)-(3500,4100) on the rail
-    ("C1", "2140-0021", 1800, 3700, 1, 0),  # x clear of the ADIM run
+    ("L1", "3210-0028", 2900, 4300, 0, 0),  # pins (2900,4300)-(3500,4300) on the rail
+    ("C1", "2140-0021", 2300, 3900, 1, 0),  # hot (2200,4200); 200 mil from VIN riser
     ("C2", "2140-0026", 5300, 2900, 1, 0),  # top hot (5200,3200), taps LED+ at 5200
     ("J1", "6101-0041", 5600, 2300, 0, 0),  # LED- at 2300, clear of C2's GND label
     ("R1", "1112-0082", 4100, 2300, 1, 0),  # top hot (4000,2900), taps LED- at 4000
