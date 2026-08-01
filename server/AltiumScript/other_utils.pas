@@ -129,6 +129,7 @@ begin
 
     // Commands that handle their own document management - skip focusing
     if (CommandName = 'search_library_symbol') or
+       (CommandName = 'build_circuit') or
        (CommandName = 'get_symbol_primitives') or
        (CommandName = 'create_symbols_batch') or
        (CommandName = 'get_footprint_primitives') or

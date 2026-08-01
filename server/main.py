@@ -1357,6 +1357,122 @@ async def create_footprints_batch(ctx: Context, spec_file: str) -> str:
     return json.dumps(result, indent=2) if not isinstance(result, str) else result
 
 @mcp.tool()
+async def build_schematic(ctx: Context, parts: list, wires: list = None,
+                          junctions: list = None, net_labels: list = None,
+                          power_ports: list = None, notes: list = None) -> str:
+    """
+    Build a wired schematic on a NEW sheet from a circuit description.
+
+    READ dev/SCHEMATIC_CONVENTIONS.md BEFORE CALLING. This tool places exactly
+    what it is given; it does not lay out or correct spacing. The conventions
+    file records the drafting rules that make the result readable, each one
+    learned by getting it wrong. The ones that most often produce a plausible
+    but wrong sheet:
+
+      * A pin's connection point is NOT Pin.Location - it is PinLength further
+        along the pin. Do not guess coordinates. Call with parts only first,
+        read the returned pin_map, then call again with wires routed from those
+        measured coordinates.
+      * Never run a riser in a pin's connection column; it drives through every
+        pin sharing that column.
+      * Give a shunt part one grid of wire between its pin and the node it taps,
+        rather than putting the junction on the pin.
+      * A net label that does not TOUCH its wire names nothing.
+      * A shunt part occupies the band below its rail. Do not route another net
+        through that band - the wire will pass through the symbol body.
+      * A ground port's "GND" label is always drawn (ShowNetName cannot hide it)
+        and occupies ~300 mil below the port. Keep wires out of that band.
+
+    Args:
+        parts: component dicts. Required keys: designator, symbol_library,
+            symbol, x, y (mils). Optional: design_item_id, orientation (0-3),
+            mirror (0/1), comment, description, footprint,
+            parameters ({name: value}).
+        wires: each a flat list of alternating x,y in mils, e.g.
+            [3900, 3000, 5300, 3000, 5300, 4900] - two segments, three points.
+        junctions: [{"x":..,"y":..}] - only where 3+ branches actually meet.
+        net_labels: [{"x":..,"y":..,"orientation":0,"text":"LED+"}] - the
+            coordinate must lie on a wire.
+        power_ports: [{"x":..,"y":..,"orientation":3,"style":5,"text":"GND",
+            "show_net_name":false}]. Harvest style/orientation from an existing
+            sheet rather than guessing: 5 = digital ground, 2 = supply bar.
+        notes: [{"x":..,"y":..,"text":".."}] free text.
+
+    Returns:
+        JSON with the created sheet name, counts, and the pin map - every
+        placed pin's true connection point, for routing a follow-up call.
+    """
+    logger.info(f"Building schematic: {len(parts)} parts")
+
+    lines = []
+    for p in parts:
+        for key in ("designator", "symbol_library", "symbol", "x", "y"):
+            if key not in p:
+                return json.dumps({"success": False,
+                                   "error": f"part missing required key '{key}': {p}"})
+        lines.append("PART|{}|{}|{}|{}|{}|{}|{}|{}".format(
+            p["designator"], p["symbol_library"], p["symbol"],
+            p.get("design_item_id", ""), int(p["x"]), int(p["y"]),
+            int(p.get("orientation", 0)), 1 if p.get("mirror") else 0))
+        if p.get("comment"):
+            lines.append(f"COMMENT|{p['comment']}")
+        if p.get("footprint"):
+            lines.append(f"FOOTPRINT|{p['footprint']}")
+        if p.get("description"):
+            lines.append(f"DESCRIPTION|{p['description']}")
+        for name, val in (p.get("parameters") or {}).items():
+            lines.append(f"PARAM|{name}|{val}")
+
+    for route in (wires or []):
+        if len(route) < 4 or len(route) % 2:
+            return json.dumps({"success": False,
+                               "error": f"wire needs an even count of >=4 coords: {route}"})
+        lines.append("WIRE|" + "|".join(str(int(v)) for v in route))
+    for j in (junctions or []):
+        lines.append(f"JUNCTION|{int(j['x'])}|{int(j['y'])}")
+    for n in (net_labels or []):
+        lines.append("NETLABEL|{}|{}|{}|{}".format(
+            int(n["x"]), int(n["y"]), int(n.get("orientation", 0)), n["text"]))
+    for pw in (power_ports or []):
+        lines.append("POWER|{}|{}|{}|{}|{}|{}".format(
+            int(pw["x"]), int(pw["y"]), int(pw.get("orientation", 3)),
+            int(pw.get("style", 5)), pw["text"],
+            1 if pw.get("show_net_name") else 0))
+    for nt in (notes or []):
+        lines.append(f"NOTE|{int(nt['x'])}|{int(nt['y'])}|{nt['text']}")
+
+    spec_path = Path("C:/Users/Public/altium_mcp/circuit_spec.txt")
+    spec_path.parent.mkdir(parents=True, exist_ok=True)
+    # cp1252: the bridge reads these as ANSI, and part descriptions carry
+    # characters that are not plain ASCII
+    spec_path.write_text("\n".join(lines) + "\n", encoding="cp1252", errors="replace")
+
+    response = await altium_bridge.execute_command("build_circuit", {})
+    if not response.get("success", False):
+        return json.dumps({"success": False,
+                           "error": response.get("error", "unknown error")})
+
+    result = response.get("result", {})
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except ValueError:
+            return result
+
+    # Hand back the measured pin map so the caller can route a second pass
+    pin_map = {}
+    pm = Path("C:/Users/Public/altium_mcp/pin_map.txt")
+    if pm.is_file():
+        for line in pm.read_text(errors="replace").splitlines():
+            f = line.strip().split("|")
+            if len(f) == 5 and f[0] == "PIN":
+                pin_map.setdefault(f[1], {})[f[2]] = [int(f[3]), int(f[4])]
+    result["pin_map"] = pin_map
+    result["pin_map_note"] = ("Absolute electrical connection points. Route "
+                              "wires from these, not from predicted offsets.")
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
 async def create_symbols_batch(ctx: Context, spec_file: str) -> str:
     """
     Create many schematic symbols in a single Altium script run.

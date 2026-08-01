@@ -208,11 +208,14 @@ def wiring(pin):
         pw.append((term[0], term[1] - GND_DROP, 3, GND_STYLE, "GND", 0))
 
     # --- input rail: 5V0 -> C1 -> U1.VIN -> L1 ---------------------------
-    w.append([(1400, RAIL_Y), l_a])
+    # The port sits two grids left of whatever it feeds first, not at a fixed
+    # x - hardcoding it left a long stub of empty wire when parts moved.
+    rail_x0 = min(c1t[0], vin[0]) - 2 * GRID
+    w.append([(rail_x0, RAIL_Y), l_a])
     w.append([vin, (vin[0], RAIL_Y)])
     j.append((vin[0], RAIL_Y))
     tap(c1t, RAIL_Y)
-    pw.append((1400, RAIL_Y, 1, RAIL_STYLE, "5V0", 1))
+    pw.append((rail_x0, RAIL_Y, 1, RAIL_STYLE, "5V0", 1))
 
     # --- L1 -> SW: drop clear of the pin column, then in --------------------
     w.append([l_b, (sw[0] + 2 * GRID, RAIL_Y), (sw[0] + 2 * GRID, sw[1]), sw])

@@ -1080,6 +1080,9 @@ begin
             Result := ExecuteGetSymbolPrimitives(RequestData);
         'create_symbols_batch':
             Result := ExecuteCreateSymbolsBatch(RequestData);
+        'build_circuit':
+            Result := BuildCircuitFromSpec(ROOT_DIR + 'circuit_spec.txt',
+                                          ROOT_DIR + 'param_placement.txt');
         'get_footprint_primitives':
             Result := ExecuteGetFootprintPrimitives(RequestData);
         'create_footprints_batch':

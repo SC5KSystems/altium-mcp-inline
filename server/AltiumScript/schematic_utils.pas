@@ -1463,3 +1463,441 @@ begin
         ComponentsArray.Free;
     end;
 end;
+
+
+{..............................................................................}
+{ Circuit builder                                                              }
+{                                                                              }
+{ Builds a wired schematic from a spec file. dev/SCHEMATIC_CONVENTIONS.md holds }
+{ the drafting rules the spec is expected to already satisfy - this code places }
+{ what it is told and reports what it did; it does not lay out.                 }
+{                                                                              }
+{ Spec records (pipe-delimited, one per line, coordinates in mils):             }
+{   PART|desig|symlib|symbol|designitemid|x|y|orient|mirror                     }
+{   COMMENT|t   DESCRIPTION|t   FOOTPRINT|n   PARAM|name|value                  }
+{   WIRE|x1|y1|x2|y2[|...]      JUNCTION|x|y                                    }
+{   NETLABEL|x|y|orient|text    POWER|x|y|orient|style|text|shownetname         }
+{   NOTE|x|y|text                                                               }
+{                                                                              }
+{ Uses LOCAL variables throughout, deliberately. The dev sandbox shares scratch }
+{ variables between blocks and that silently corrupted results three separate   }
+{ times - a loop counter overwriting a stored coordinate yields plausible wrong }
+{ output rather than an error.                                                  }
+{..............................................................................}
+
+// Absolute electrical connection point of a pin. Pin.Location is the end
+// attached to the BODY; the hot end is PinLength further along the pin's
+// orientation. Verified 119:0 against a hand-wired production sheet.
+procedure GetPinHotEnd(Pin: ISch_Pin; var HotX: Integer; var HotY: Integer);
+var
+    PinLen : Integer;
+begin
+    HotX := CoordToMils(Pin.Location.X);
+    HotY := CoordToMils(Pin.Location.Y);
+    PinLen := CoordToMils(Pin.PinLength);
+    if      (Pin.Orientation = 0) then HotX := HotX + PinLen
+    else if (Pin.Orientation = 1) then HotY := HotY + PinLen
+    else if (Pin.Orientation = 2) then HotX := HotX - PinLen
+    else if (Pin.Orientation = 3) then HotY := HotY - PinLen;
+end;
+
+// Body extent EXCLUDING parameter text. Component.BoundingRectangle includes
+// the text, so anchoring text to it feeds back on itself and walks the block
+// off the sheet.
+procedure GetComponentBody(Comp: ISch_Component; var BodyL: Integer; var BodyR: Integer; var BodyT: Integer);
+var
+    Iter : ISch_Iterator;
+    Prim : ISch_GraphicalObject;
+    Rect : IDispatch;
+begin
+    BodyL := 999999;
+    BodyR := -999999;
+    BodyT := -999999;
+    Iter := Comp.SchIterator_Create;
+    Iter.AddFilter_ObjectSet(MkSet(ePin, eLine, eRectangle, eArc, ePolyline, eEllipse));
+    Prim := Iter.FirstSchObject;
+    while (Prim <> nil) do
+    begin
+        Rect := Prim.BoundingRectangle;
+        if (CoordToMils(Rect.Left)  < BodyL) then BodyL := CoordToMils(Rect.Left);
+        if (CoordToMils(Rect.Right) > BodyR) then BodyR := CoordToMils(Rect.Right);
+        if (CoordToMils(Rect.Top)   > BodyT) then BodyT := CoordToMils(Rect.Top);
+        Prim := Iter.NextSchObject;
+    end;
+    Comp.SchIterator_Destroy(Iter);
+end;
+
+// Apply harvested parameter placement to one component. Harvested offsets are
+// relative SPACING from a reference sheet; the block is translated to clear the
+// body and sit below the topmost pin, so it stays together on one side of any
+// rail instead of straddling it. Justification is what aligns the column.
+procedure StyleComponentText(Comp: ISch_Component; Placement: TStringList);
+var
+    LibRef, Rec, PName : String;
+    i, MaxDy, AnchorX, BlockTop, Just, TextY : Integer;
+    BodyL, BodyR, BodyT : Integer;
+    Found : Boolean;
+    Iter : ISch_Iterator;
+    Param : ISch_Parameter;
+begin
+    LibRef := Comp.LibReference;
+
+    Found := False;
+    MaxDy := -999999;
+    for i := 0 to Placement.Count - 1 do
+        if (GetFieldFromPipeString(Placement[i], 1) = LibRef) then
+        begin
+            Found := True;
+            if (StrToInt(GetFieldFromPipeString(Placement[i], 5)) > MaxDy) then
+                MaxDy := StrToInt(GetFieldFromPipeString(Placement[i], 5));
+        end;
+    if not Found then Exit;
+
+    GetComponentBody(Comp, BodyL, BodyR, BodyT);
+    BlockTop := BodyT - 100;
+
+    Iter := Comp.SchIterator_Create;
+    Iter.AddFilter_ObjectSet(MkSet(eParameter));
+    Param := Iter.FirstSchObject;
+    while (Param <> nil) do
+    begin
+        Param.IsHidden := True;
+        Param := Iter.NextSchObject;
+    end;
+    Comp.SchIterator_Destroy(Iter);
+
+    for i := 0 to Placement.Count - 1 do
+    begin
+        Rec := Placement[i];
+        if (GetFieldFromPipeString(Rec, 1) = LibRef) then
+        begin
+            PName := GetFieldFromPipeString(Rec, 3);
+            Just  := StrToInt(GetFieldFromPipeString(Rec, 6));
+            if (Just = 2) or (Just = 5) or (Just = 8) then
+                AnchorX := BodyL - 50
+            else
+                AnchorX := BodyR + 50;
+            TextY := BlockTop - (MaxDy - StrToInt(GetFieldFromPipeString(Rec, 5)));
+
+            if (PName = 'DESIGNATOR') then
+            begin
+                Comp.Designator.Autoposition := False;
+                Comp.Designator.Orientation := StrToInt(GetFieldFromPipeString(Rec, 7));
+                Comp.Designator.Justification := Just;
+                Comp.Designator.MoveToXY(MilsToCoord(AnchorX), MilsToCoord(TextY));
+            end
+            else
+            begin
+                Iter := Comp.SchIterator_Create;
+                Iter.AddFilter_ObjectSet(MkSet(eParameter));
+                Param := Iter.FirstSchObject;
+                while (Param <> nil) do
+                begin
+                    if (UpperCase(Param.Name) = UpperCase(PName)) then
+                    begin
+                        Param.IsHidden := False;
+                        Param.Autoposition := False;
+                        Param.Orientation := StrToInt(GetFieldFromPipeString(Rec, 7));
+                        Param.Justification := Just;
+                        Param.MoveToXY(MilsToCoord(AnchorX), MilsToCoord(TextY));
+                    end;
+                    Param := Iter.NextSchObject;
+                end;
+                Comp.SchIterator_Destroy(Iter);
+            end;
+        end;
+    end;
+end;
+
+function BuildCircuitFromSpec(SpecPath: String; PlacementPath: String): String;
+var
+    Spec, Placement, PinMap : TStringList;
+    TargetDoc, LibDoc : ISch_Document;
+    Comp, Found, Replica : ISch_Component;
+    Iter, ChildIter : ISch_Iterator;
+    Prim, Param, Obj : ISch_GraphicalObject;
+    Impl : ISch_Implementation;
+    Rec, Kind, CurLib, PName, PVal : String;
+    i, fld, vtx, PartCount, GfxCount, PinCount : Integer;
+    HotX, HotY : Integer;
+    Exists : Boolean;
+begin
+    Result := '{"success": false, "error": "build did not run"}';
+
+    if not FileExists(SpecPath) then
+    begin
+        Result := '{"success": false, "error": "spec file not found"}';
+        Exit;
+    end;
+
+    Spec := TStringList.Create;
+    Spec.LoadFromFile(SpecPath);
+    Placement := TStringList.Create;
+    if FileExists(PlacementPath) then Placement.LoadFromFile(PlacementPath);
+
+    // SAFETY: opening a symbol library makes THAT document current. Stray
+    // components were once registered into shared libraries on a read-only
+    // share exactly that way. Create the target up front, hold it by
+    // reference, and verify it is a schematic (32) not a library (33) once.
+    GetWorkSpace.DM_CreateNewDocument('SCH');
+    TargetDoc := SchServer.GetCurrentSchDocument;
+    if (TargetDoc = nil) then
+    begin
+        Spec.Free;
+        Placement.Free;
+        Result := '{"success": false, "error": "could not create a target schematic"}';
+        Exit;
+    end;
+    if (TargetDoc.ObjectID <> 32) then
+    begin
+        Spec.Free;
+        Placement.Free;
+        Result := '{"success": false, "error": "target is not a schematic - refusing to build"}';
+        Exit;
+    end;
+
+    SchServer.ProcessControl.PreProcess(TargetDoc, '');
+    Comp := nil;
+    CurLib := '';
+    PartCount := 0;
+    GfxCount := 0;
+
+    for i := 0 to Spec.Count - 1 do
+    begin
+        Rec := Spec[i];
+        Kind := GetFieldFromPipeString(Rec, 0);
+
+        if (Kind = 'PART') then
+        begin
+            if (GetFieldFromPipeString(Rec, 2) <> CurLib) then
+            begin
+                CurLib := GetFieldFromPipeString(Rec, 2);
+                Client.ShowDocument(Client.OpenDocument('SchLib', CurLib));
+                Sleep(1200);
+            end;
+            LibDoc := SchServer.GetCurrentSchDocument;
+
+            Found := nil;
+            Iter := LibDoc.SchLibIterator_Create;
+            Iter.AddFilter_ObjectSet(MkSet(eSchComponent));
+            Prim := Iter.FirstSchObject;
+            while (Prim <> nil) do
+            begin
+                if (Prim.LibReference = GetFieldFromPipeString(Rec, 3)) then Found := Prim;
+                Prim := Iter.NextSchObject;
+            end;
+            LibDoc.SchIterator_Destroy(Iter);
+
+            if (Found = nil) then
+                Comp := nil
+            else
+            begin
+                Replica := Found.Replicate;
+                Replica.Designator.Text := GetFieldFromPipeString(Rec, 1);
+                Replica.DesignItemID    := GetFieldFromPipeString(Rec, 4);
+                Replica.Orientation     := StrToInt(GetFieldFromPipeString(Rec, 7));
+
+                TargetDoc.RegisterSchObjectInContainer(Replica);
+                SchServer.RobotManager.SendMessage(TargetDoc.I_ObjectAddress, c_BroadCast,
+                    SCHM_PrimitiveRegistration, Replica.I_ObjectAddress);
+
+                // Mirror is the editor's X key. IsMirrored is a display flag
+                // only - it sets True and leaves the pin coordinates alone.
+                if (GetFieldFromPipeString(Rec, 8) = '1') then
+                    Replica.Mirror(Replica.Location);
+
+                // MoveByXY, not Location, so child text travels with the part
+                Replica.MoveByXY(
+                    MilsToCoord(StrToInt(GetFieldFromPipeString(Rec, 5)) - CoordToMils(Replica.Location.X)),
+                    MilsToCoord(StrToInt(GetFieldFromPipeString(Rec, 6)) - CoordToMils(Replica.Location.Y)));
+
+                Comp := Replica;
+                PartCount := PartCount + 1;
+            end;
+        end
+
+        else if (Kind = 'COMMENT') then
+        begin
+            if (Comp <> nil) then Comp.Comment.Text := GetFieldFromPipeString(Rec, 1);
+        end
+
+        else if (Kind = 'DESCRIPTION') then
+        begin
+            if (Comp <> nil) then Comp.ComponentDescription := GetFieldFromPipeString(Rec, 1);
+        end
+
+        else if (Kind = 'FOOTPRINT') then
+        begin
+            if (Comp <> nil) then
+            begin
+                Impl := Comp.AddSchImplementation;
+                Impl.ModelName := GetFieldFromPipeString(Rec, 1);
+                Impl.ModelType := 'PCBLIB';
+                Impl.IsCurrent := True;
+                Impl.UseComponentLibrary := True;
+            end;
+        end
+
+        else if (Kind = 'PARAM') then
+        begin
+            if (Comp <> nil) then
+            begin
+                PName := GetFieldFromPipeString(Rec, 1);
+                PVal  := GetFieldFromPipeString(Rec, 2);
+                Exists := False;
+                ChildIter := Comp.SchIterator_Create;
+                ChildIter.AddFilter_ObjectSet(MkSet(eParameter));
+                Param := ChildIter.FirstSchObject;
+                while (Param <> nil) do
+                begin
+                    if (UpperCase(Param.Name) = UpperCase(PName)) then
+                    begin
+                        Param.Text := PVal;
+                        Exists := True;
+                    end;
+                    Param := ChildIter.NextSchObject;
+                end;
+                Comp.SchIterator_Destroy(ChildIter);
+
+                if not Exists then
+                begin
+                    Param := SchServer.SchObjectFactory(eParameter, eCreate_Default);
+                    Param.Name := PName;
+                    Param.Text := PVal;
+                    Param.ParamType := eParameterType_String;
+                    Param.ReadOnlyState := eReadOnly_None;
+                    Param.IsHidden := True;
+                    Comp.AddSchObject(Param);
+                    SchServer.RobotManager.SendMessage(Comp.I_ObjectAddress, c_BroadCast,
+                        SCHM_PrimitiveRegistration, Param.I_ObjectAddress);
+                end;
+            end;
+        end
+
+        else if (Kind = 'WIRE') then
+        begin
+            Obj := SchServer.SchObjectFactory(eWire, eCreate_GlobalCopy);
+            Obj.Location := Point(MilsToCoord(StrToInt(GetFieldFromPipeString(Rec, 1))),
+                                  MilsToCoord(StrToInt(GetFieldFromPipeString(Rec, 2))));
+            fld := 1;
+            vtx := 0;
+            while (GetFieldFromPipeString(Rec, fld) <> '') do
+            begin
+                vtx := vtx + 1;
+                Obj.InsertVertex := vtx;
+                Obj.SetState_Vertex(vtx,
+                    Point(MilsToCoord(StrToInt(GetFieldFromPipeString(Rec, fld))),
+                          MilsToCoord(StrToInt(GetFieldFromPipeString(Rec, fld + 1)))));
+                fld := fld + 2;
+            end;
+            TargetDoc.RegisterSchObjectInContainer(Obj);
+            SchServer.RobotManager.SendMessage(TargetDoc.I_ObjectAddress, c_BroadCast,
+                SCHM_PrimitiveRegistration, Obj.I_ObjectAddress);
+            GfxCount := GfxCount + 1;
+        end
+
+        else if (Kind = 'JUNCTION') then
+        begin
+            Obj := SchServer.SchObjectFactory(eJunction, eCreate_GlobalCopy);
+            Obj.Location := Point(MilsToCoord(StrToInt(GetFieldFromPipeString(Rec, 1))),
+                                  MilsToCoord(StrToInt(GetFieldFromPipeString(Rec, 2))));
+            TargetDoc.RegisterSchObjectInContainer(Obj);
+            SchServer.RobotManager.SendMessage(TargetDoc.I_ObjectAddress, c_BroadCast,
+                SCHM_PrimitiveRegistration, Obj.I_ObjectAddress);
+            GfxCount := GfxCount + 1;
+        end
+
+        else if (Kind = 'NETLABEL') then
+        begin
+            Obj := SchServer.SchObjectFactory(eNetLabel, eCreate_GlobalCopy);
+            Obj.Location := Point(MilsToCoord(StrToInt(GetFieldFromPipeString(Rec, 1))),
+                                  MilsToCoord(StrToInt(GetFieldFromPipeString(Rec, 2))));
+            Obj.Orientation := StrToInt(GetFieldFromPipeString(Rec, 3));
+            Obj.Text := GetFieldFromPipeString(Rec, 4);
+            TargetDoc.RegisterSchObjectInContainer(Obj);
+            SchServer.RobotManager.SendMessage(TargetDoc.I_ObjectAddress, c_BroadCast,
+                SCHM_PrimitiveRegistration, Obj.I_ObjectAddress);
+            GfxCount := GfxCount + 1;
+        end
+
+        else if (Kind = 'POWER') then
+        begin
+            Obj := SchServer.SchObjectFactory(ePowerObject, eCreate_GlobalCopy);
+            Obj.Location := Point(MilsToCoord(StrToInt(GetFieldFromPipeString(Rec, 1))),
+                                  MilsToCoord(StrToInt(GetFieldFromPipeString(Rec, 2))));
+            Obj.Orientation := StrToInt(GetFieldFromPipeString(Rec, 3));
+            Obj.Style := StrToInt(GetFieldFromPipeString(Rec, 4));
+            // NOTE: ShowNetName := False does NOT hide the label - Altium draws
+            // it regardless. Keep wires out of the ~300 mil band below a port.
+            Obj.ShowNetName := (GetFieldFromPipeString(Rec, 6) = '1');
+            Obj.Text := GetFieldFromPipeString(Rec, 5);
+            TargetDoc.RegisterSchObjectInContainer(Obj);
+            SchServer.RobotManager.SendMessage(TargetDoc.I_ObjectAddress, c_BroadCast,
+                SCHM_PrimitiveRegistration, Obj.I_ObjectAddress);
+            GfxCount := GfxCount + 1;
+        end
+
+        else if (Kind = 'NOTE') then
+        begin
+            Obj := SchServer.SchObjectFactory(eLabel, eCreate_GlobalCopy);
+            Obj.Location := Point(MilsToCoord(StrToInt(GetFieldFromPipeString(Rec, 1))),
+                                  MilsToCoord(StrToInt(GetFieldFromPipeString(Rec, 2))));
+            Obj.Text := GetFieldFromPipeString(Rec, 3);
+            TargetDoc.RegisterSchObjectInContainer(Obj);
+            SchServer.RobotManager.SendMessage(TargetDoc.I_ObjectAddress, c_BroadCast,
+                SCHM_PrimitiveRegistration, Obj.I_ObjectAddress);
+            GfxCount := GfxCount + 1;
+        end;
+    end;
+
+    // Parameter text last, once every part is placed.
+    if (Placement.Count > 0) then
+    begin
+        Iter := TargetDoc.SchIterator_Create;
+        Iter.AddFilter_ObjectSet(MkSet(eSchComponent));
+        Prim := Iter.FirstSchObject;
+        while (Prim <> nil) do
+        begin
+            StyleComponentText(Prim, Placement);
+            Prim := Iter.NextSchObject;
+        end;
+        TargetDoc.SchIterator_Destroy(Iter);
+    end;
+
+    SchServer.ProcessControl.PostProcess(TargetDoc, '');
+    TargetDoc.GraphicallyInvalidate;
+
+    // Pin map: absolute connection point of every placed pin, so a caller can
+    // route from measured coordinates instead of predicting rotated offsets.
+    PinMap := TStringList.Create;
+    PinCount := 0;
+    Iter := TargetDoc.SchIterator_Create;
+    Iter.AddFilter_ObjectSet(MkSet(eSchComponent));
+    Prim := Iter.FirstSchObject;
+    while (Prim <> nil) do
+    begin
+        ChildIter := Prim.SchIterator_Create;
+        ChildIter.AddFilter_ObjectSet(MkSet(ePin));
+        Param := ChildIter.FirstSchObject;
+        while (Param <> nil) do
+        begin
+            GetPinHotEnd(Param, HotX, HotY);
+            PinMap.Add('PIN|' + Prim.Designator.Text + '|' + Param.Name + '|' +
+                       IntToStr(HotX) + '|' + IntToStr(HotY));
+            PinCount := PinCount + 1;
+            Param := ChildIter.NextSchObject;
+        end;
+        Prim.SchIterator_Destroy(ChildIter);
+        Prim := Iter.NextSchObject;
+    end;
+    TargetDoc.SchIterator_Destroy(Iter);
+    PinMap.SaveToFile('C:\Users\Public\altium_mcp\pin_map.txt');
+    PinMap.Free;
+
+    Result := '{"success": true, "sheet": "' + TargetDoc.DocumentName +
+              '", "parts": ' + IntToStr(PartCount) +
+              ', "graphics": ' + IntToStr(GfxCount) +
+              ', "pins": ' + IntToStr(PinCount) + '}';
+    Spec.Free;
+    Placement.Free;
+end;
