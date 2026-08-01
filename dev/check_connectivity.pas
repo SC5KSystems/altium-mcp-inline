@@ -208,7 +208,7 @@ begin
     // body here is the DRAWN outline only - graphics, no pins - because wires
     // legitimately end on pins, which stick out past the body.
     SandboxLog('--- wires through component bodies ---');
-    I3 := 0;
+    BodyCross := 0;
     Obj2 := Obj1.SchIterator_Create;
     Obj2.AddFilter_ObjectSet(MkSet(eSchComponent));
     Obj6 := Obj2.FirstSchObject;
@@ -245,7 +245,7 @@ begin
                             begin
                                 SandboxLog('  wire crosses ' + Obj6.Designator.Text + ' body at y=' + SbxField(S2, 1));
                                 List2.Add('BODYCROSS|' + Obj6.Designator.Text + '|' + S2);
-                                I3 := I3 + 1;
+                                BodyCross := BodyCross + 1;
                             end;
                     // vertical segment through the body?
                     if (SbxField(S2, 0) = SbxField(S2, 2)) then
@@ -254,14 +254,14 @@ begin
                             begin
                                 SandboxLog('  wire crosses ' + Obj6.Designator.Text + ' body at x=' + SbxField(S2, 0));
                                 List2.Add('BODYCROSS|' + Obj6.Designator.Text + '|' + S2);
-                                I3 := I3 + 1;
+                                BodyCross := BodyCross + 1;
                             end;
                 end;
             end;
         Obj6 := Obj2.NextSchObject;
     end;
     Obj1.SchIterator_Destroy(Obj2);
-    SandboxLog('wires crossing a component body = ' + IntToStr(I3));
+    SandboxLog('wires crossing a component body = ' + IntToStr(BodyCross));
 
     // ---- net labels: a label only names a wire if it TOUCHES it ----------
     // A label sitting near a wire looks right and names nothing, so check that
@@ -316,7 +316,7 @@ begin
                   ', "pins_unconnected": ' + SbxField(SavedCounts, 1) +
                   ', "suspect_junctions": ' + IntToStr(I3) +
                   ', "netlabels_off_wire": ' + IntToStr(I2) +
-                  ', "wires_through_bodies": ' + IntToStr(I3) + '}';
+                  ', "wires_through_bodies": ' + IntToStr(BodyCross) + '}';
     List1.Free;
     List2.Free;
 end;
