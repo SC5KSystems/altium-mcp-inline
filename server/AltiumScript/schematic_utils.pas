@@ -1590,6 +1590,16 @@ begin
                 // Same pose as the reference: offsets are literal.
                 AnchorX := CoordToMils(Comp.Location.X) + StrToInt(GetFieldFromPipeString(Rec, 4));
                 TextY   := CoordToMils(Comp.Location.Y) + StrToInt(GetFieldFromPipeString(Rec, 5));
+
+                // ...unless the anchor lands ON the body. RES-DISCRETE offsets
+                // (-100 / +600) sit clear of its body and give the four-corner
+                // house layout; CAP-NP uses dx=0, which for a rotated cap is
+                // the middle of the plates. Push those clear, keeping dy.
+                if (AnchorX >= BodyL) and (AnchorX <= BodyR) then
+                    if (Just = 2) or (Just = 5) or (Just = 8) then
+                        AnchorX := BodyL - 50
+                    else
+                        AnchorX := BodyR + 50;
             end
             else
             begin
@@ -1640,7 +1650,8 @@ var
     Iter, ChildIter : ISch_Iterator;
     Prim, Param, Obj : ISch_GraphicalObject;
     Impl : ISch_Implementation;
-    Rec, Kind, CurLib, PName, PVal : String;
+    Rec, Kind, CurLib, PName, PVal, Adopted : String;
+    Proj : IProject;
     i, fld, vtx, PartCount, GfxCount, PinCount : Integer;
     HotX, HotY : Integer;
     Exists : Boolean;
@@ -1678,6 +1689,20 @@ begin
         Result := '{"success": false, "error": "target is not a schematic - refusing to build"}';
         Exit;
     end;
+
+    // DM_CreateNewDocument attaches the new sheet to the FOCUSED PROJECT, so
+    // generated sheets were being silently adopted into the user's design -
+    // they showed up as [13]/[14] in Base.PrjPcb instead of under Free
+    // Documents. A generated sheet must not modify an existing project
+    // unless the caller asks for that, so detach it again.
+    Adopted := '';
+    Proj := GetWorkspace.DM_FocusedProject;
+    if (Proj <> nil) then
+        if (Pos('Free Documents', Proj.DM_ProjectFileName) = 0) then
+        begin
+            Adopted := Proj.DM_ProjectFileName;
+            Proj.DM_RemoveSourceDocument(TargetDoc.DocumentName);
+        end;
 
     SchServer.ProcessControl.PreProcess(TargetDoc, '');
     Comp := nil;
@@ -1917,7 +1942,7 @@ begin
     PinMap.SaveToFile('C:\Users\Public\altium_mcp\pin_map.txt');
     PinMap.Free;
 
-    Result := '{"success": true, "sheet": "' + TargetDoc.DocumentName +
+    Result := '{"success": true, "detached_from": "' + Adopted + '", "sheet": "' + TargetDoc.DocumentName +
               '", "parts": ' + IntToStr(PartCount) +
               ', "graphics": ' + IntToStr(GfxCount) +
               ', "pins": ' + IntToStr(PinCount) + '}';
