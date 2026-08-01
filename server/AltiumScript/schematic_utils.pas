@@ -1573,11 +1573,25 @@ begin
         begin
             PName := GetFieldFromPipeString(Rec, 3);
             Just  := StrToInt(GetFieldFromPipeString(Rec, 6));
-            if (Just = 2) or (Just = 5) or (Just = 8) then
-                AnchorX := BodyL - 50
+            // Placement is harvested per LibReference, but the reference part
+            // may have been ROTATED while this one is not. Beside-the-body only
+            // works for a vertical part; on a horizontal one it lands exactly
+            // where the wire leaves the end pin. So stack the block ABOVE a
+            // horizontal part and beside a vertical one.
+            if (Comp.Orientation = 1) or (Comp.Orientation = 3) then
+            begin
+                if (Just = 2) or (Just = 5) or (Just = 8) then
+                    AnchorX := BodyL - 50
+                else
+                    AnchorX := BodyR + 50;
+                TextY := BlockTop - (MaxDy - StrToInt(GetFieldFromPipeString(Rec, 5)));
+            end
             else
-                AnchorX := BodyR + 50;
-            TextY := BlockTop - (MaxDy - StrToInt(GetFieldFromPipeString(Rec, 5)));
+            begin
+                AnchorX := BodyL;
+                Just := 0;
+                TextY := BodyT + 100 + (MaxDy - StrToInt(GetFieldFromPipeString(Rec, 5)));
+            end;
 
             if (PName = 'DESIGNATOR') then
             begin
