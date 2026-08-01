@@ -1536,18 +1536,24 @@ var
     LibRef, Rec, PName : String;
     i, MaxDy, AnchorX, BlockTop, Just, TextY : Integer;
     BodyL, BodyR, BodyT : Integer;
-    Found : Boolean;
+    Found, ExactPose : Boolean;
     Iter : ISch_Iterator;
     Param : ISch_Parameter;
 begin
     LibRef := Comp.LibReference;
 
+    // Prefer a record harvested from a part in the SAME pose. Its offsets are
+    // then literal - the house style puts a horizontal resistor's four fields
+    // at the four corners, which is not a stack and must not be re-flowed.
+    ExactPose := False;
     Found := False;
     MaxDy := -999999;
     for i := 0 to Placement.Count - 1 do
         if (GetFieldFromPipeString(Placement[i], 1) = LibRef) then
         begin
             Found := True;
+            if (StrToInt(GetFieldFromPipeString(Placement[i], 2)) = Comp.Orientation) then
+                ExactPose := True;
             if (StrToInt(GetFieldFromPipeString(Placement[i], 5)) > MaxDy) then
                 MaxDy := StrToInt(GetFieldFromPipeString(Placement[i], 5));
         end;
@@ -1569,7 +1575,8 @@ begin
     for i := 0 to Placement.Count - 1 do
     begin
         Rec := Placement[i];
-        if (GetFieldFromPipeString(Rec, 1) = LibRef) then
+        if (GetFieldFromPipeString(Rec, 1) = LibRef) and
+           ((not ExactPose) or (StrToInt(GetFieldFromPipeString(Rec, 2)) = Comp.Orientation)) then
         begin
             PName := GetFieldFromPipeString(Rec, 3);
             Just  := StrToInt(GetFieldFromPipeString(Rec, 6));
@@ -1578,19 +1585,21 @@ begin
             // works for a vertical part; on a horizontal one it lands exactly
             // where the wire leaves the end pin. So stack the block ABOVE a
             // horizontal part and beside a vertical one.
-            if (Comp.Orientation = 1) or (Comp.Orientation = 3) then
+            if ExactPose then
             begin
+                // Same pose as the reference: offsets are literal.
+                AnchorX := CoordToMils(Comp.Location.X) + StrToInt(GetFieldFromPipeString(Rec, 4));
+                TextY   := CoordToMils(Comp.Location.Y) + StrToInt(GetFieldFromPipeString(Rec, 5));
+            end
+            else
+            begin
+                // No reference in this pose - fall back to a column beside the
+                // body, keeping the harvested spacing and justification.
                 if (Just = 2) or (Just = 5) or (Just = 8) then
                     AnchorX := BodyL - 50
                 else
                     AnchorX := BodyR + 50;
                 TextY := BlockTop - (MaxDy - StrToInt(GetFieldFromPipeString(Rec, 5)));
-            end
-            else
-            begin
-                AnchorX := BodyL;
-                Just := 0;
-                TextY := BodyT + 100 + (MaxDy - StrToInt(GetFieldFromPipeString(Rec, 5)));
             end;
 
             if (PName = 'DESIGNATOR') then

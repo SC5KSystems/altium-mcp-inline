@@ -11,6 +11,7 @@ Usage:
 """
 import ctypes
 import subprocess
+import time
 import sys
 from ctypes import wintypes
 from pathlib import Path
@@ -32,8 +33,54 @@ def _class(hwnd):
     return buf.value
 
 
-def capture(hwnd, out_path, flags=PW_RENDERFULLCONTENT):
+
+def focus_and_refresh(hwnd, settle=1.2):
+    """Bring a window truly to the front and force it to repaint.
+
+    PrintWindow copies whatever the window last painted. If SetForegroundWindow
+    silently fails - Windows refuses it when another process owns the
+    foreground - or the window has not repainted since the document changed,
+    the capture is a stale image of a different sheet. That produced several
+    screenshots of the wrong schematic that looked plausible enough to trust.
+
+    AttachThreadInput lends us the foreground thread's input state so the
+    activation is allowed, then RDW_UPDATENOW forces a synchronous repaint
+    before anything is copied.
+    """
+    u = ctypes.windll.user32
+    SW_RESTORE, SW_SHOW = 9, 5
+    RDW = 0x1 | 0x4 | 0x80 | 0x100     # INVALIDATE|ERASE|ALLCHILDREN|UPDATENOW
+
+    if u.IsIconic(hwnd):
+        u.ShowWindow(hwnd, SW_RESTORE)
+    else:
+        u.ShowWindow(hwnd, SW_SHOW)
+
+    fg = u.GetForegroundWindow()
+    cur = ctypes.windll.kernel32.GetCurrentThreadId()
+    tgt = u.GetWindowThreadProcessId(hwnd, None)
+    fgt = u.GetWindowThreadProcessId(fg, None) if fg else 0
+    for t in (fgt, tgt):
+        if t and t != cur:
+            u.AttachThreadInput(t, cur, True)
+    try:
+        u.BringWindowToTop(hwnd)
+        u.SetForegroundWindow(hwnd)
+    finally:
+        for t in (fgt, tgt):
+            if t and t != cur:
+                u.AttachThreadInput(t, cur, False)
+
+    time.sleep(settle)
+    u.RedrawWindow(hwnd, None, None, RDW)
+    time.sleep(0.4)
+    return u.GetForegroundWindow() == hwnd
+
+
+def capture(hwnd, out_path, flags=PW_RENDERFULLCONTENT, refresh=True):
     """Render a window to PNG using PrintWindow via System.Drawing."""
+    if refresh:
+        focus_and_refresh(hwnd)
     rect = wintypes.RECT()
     ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
     w, h = rect.right - rect.left, rect.bottom - rect.top
@@ -121,3 +168,31 @@ if __name__ == "__main__":
     else:
         path, info = capture(int(args[0]), args[1])
         print(f"{path} ({info})")
+
+
+def altium_window(doc_name=None):
+    """The Altium frame actually showing a document - not just the first match.
+
+    Altium keeps several top-level windows whose titles contain "Altium
+    Designer" (project frames, hidden helpers). Picking find_windows(...)[0]
+    returned one holding stale content, which silently produced screenshots of
+    a completely different schematic while every other signal said the right
+    document was focused. Prefer the frame whose title names the document, and
+    otherwise the largest visible one.
+    """
+    u = ctypes.windll.user32
+    cands = find_windows(lambda h: "Altium Designer" in _title(h) and u.IsWindowVisible(h))
+    if not cands:
+        return None
+
+    if doc_name:
+        for h in cands:
+            if doc_name.lower() in _title(h).lower():
+                return h
+
+    def area(h):
+        r = wintypes.RECT()
+        u.GetWindowRect(h, ctypes.byref(r))
+        return (r.right - r.left) * (r.bottom - r.top)
+
+    return max(cands, key=area)

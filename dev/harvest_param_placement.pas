@@ -50,12 +50,14 @@ begin
     Obj6 := Obj2.FirstSchObject;
     while (Obj6 <> nil) do
     begin
+        // Key on symbol AND orientation. A style harvested from a rotated part
+        // does not transfer to an unrotated one: beside-the-body is right for a
+        // vertical resistor and lands on the wire for a horizontal one.
         S3 := Obj6.LibReference;
-        // one exemplar per symbol is enough, and the first one found is as
-        // good as any - they are drawn to the same house style
-        if (List2.IndexOf(S3) < 0) then
+        S1 := S3 + '#' + IntToStr(Obj6.Orientation);
+        if (List2.IndexOf(S1) < 0) then
         begin
-            List2.Add(S3);
+            List2.Add(S1);
             I4 := I4 + 1;
             I1 := CoordToMils(Obj6.Location.X);
             I2 := CoordToMils(Obj6.Location.Y);
