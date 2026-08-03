@@ -42,6 +42,28 @@ hostile to automation:
 - `--auto-restart` force-restarts Altium as a last resort (~60-90s, kills
   X2.EXE, unsaved Altium work is lost).
 
+## Screenshots are a standing TOP priority
+
+If schematic screenshots break, fixing them comes before whatever else is in
+flight. They are the only check that sees TEXT OVERLAP - net labels,
+parameters and designators colliding with wires and each other - which every
+geometric audit here misses, and which otherwise puts the user back in the
+review loop.
+
+The verified recipe (`capture_window.capture_document`):
+
+1. `Client.ShowDocument` the target sheet, then zoom to fit - this switches
+   the visible tab AND retitles the owning frame to the document name.
+2. Capture the frame whose TITLE CONTAINS THE DOCUMENT NAME - never the first
+   "Altium Designer" window found. Several frames exist; the first match
+   repeatedly produced convincing screenshots of the WRONG document while
+   every API said the right one was current.
+
+Dead ends, measured so they are not retried: RedrawToDC draws blank at all
+nine PrintKind/PrintWhat combos (sheet draws in internal units, off-canvas);
+rendering into a TMetafile records 190KB outside the declared frame and
+rasterizes white.
+
 ## Diagnosing failures
 
 1. **Step log** (primary): the last logged line tells you which statement

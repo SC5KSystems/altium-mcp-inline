@@ -196,3 +196,28 @@ def altium_window(doc_name=None):
         return (r.right - r.left) * (r.bottom - r.top)
 
     return max(cands, key=area)
+
+
+def capture_document(doc_name, out_path, zoom_script_runner=None):
+    """THE reliable way to screenshot a schematic document. Verified recipe:
+
+    1. Client.ShowDocument the target (the caller does this, typically via
+       dev/sandbox_runner.py running a Show+Zoom script) - this switches the
+       visible tab AND retitles the owning frame to the document name.
+    2. Pick the frame whose TITLE CONTAINS THE DOCUMENT NAME - never [0].
+       Altium keeps several top-level frames; grabbing the first match
+       produced screenshots of a different document than every API said was
+       current, repeatedly and convincingly.
+    3. capture() forces foreground + synchronous repaint, then PrintWindow.
+
+    Returns (png_path, frame_title) or (None, reason).
+    Screenshots are a standing top priority: if this breaks, fixing it comes
+    before whatever else is in flight, because it is the only check that sees
+    text overlap - the defect class every geometric audit misses.
+    """
+    hits = find_windows(lambda h: doc_name.lower() in _title(h).lower()
+                        and "Altium Designer" in _title(h))
+    if not hits:
+        return None, f"no Altium frame titled with {doc_name!r} - was it shown?"
+    path, info = capture(hits[0], out_path)
+    return path, _title(hits[0])
