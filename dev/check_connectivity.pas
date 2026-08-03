@@ -1,5 +1,14 @@
 // READ-ONLY electrical check of the focused schematic.
 //
+// KNOWN LIMITATION - MIRRORED COMPONENTS: this checker computes pin hot ends
+// from Pin.Location + PinLength along Pin.Orientation, which reports WRONG
+// positions for pins of a component transformed with Mirror(). Verified on a
+// mirrored USB-C connector: the checker placed its pins where neither the
+// builder pin map nor dump_sheet.pas (whose netlist matched a hand-drawn
+// reference sheet exactly) put them, and flagged phantom unconnected pins.
+// Trust netlist.py compare for mirrored parts; fixing the hot-end math for
+// mirrored parents needs its own experiment.
+//
 // Catches the failure mode where a wire LOOKS connected but is not: routing to
 // ISch_Pin.Location (the body end) instead of the pin's electrical end runs
 // the wire straight through the pin and out the far side. The pin then reads
