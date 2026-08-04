@@ -44,6 +44,17 @@ hostile to automation:
 
 ## Screenshots are a standing TOP priority
 
+**SOLVED - use dev/render_sheet.py.** Headless render via Select All +
+Sch:Copy: Altium puts a properly framed metafile on the clipboard (the same
+mechanism that pastes schematics into Word); the script extracts and
+rasterizes it to PNG. No window, no foreground, no paint state - always
+CURRENT content. Overwrites the user clipboard; avoid mid copy-paste.
+
+    python dev/render_sheet.py <sheet-path> <out.png> [width]
+
+Everything below documents why window capture cannot work here and remains
+only for capturing Altium UI state (dialogs, panels).
+
 If schematic screenshots break, fixing them comes before whatever else is in
 flight. They are the only check that sees TEXT OVERLAP - net labels,
 parameters and designators colliding with wires and each other - which every
