@@ -83,7 +83,7 @@ begin
         // but does not necessarily switch the visible tab, so window captures kept
         // showing a different sheet while every other signal said the right one was
         // focused. Client.ShowDocument is what actually changes the UI.
-        S2 := 'Sheet14.SchDoc';
+        S2 := 'Sheet13.SchDoc';
         Obj3 := Client.GetDocumentByPath(S2);
         if (Obj3 = nil) then
         begin

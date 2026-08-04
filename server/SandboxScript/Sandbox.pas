@@ -44,11 +44,13 @@ begin
 
     try
         // === BEGIN EXPERIMENT (rewritten by the run_altium_script tool) ===
-        SandboxLog('launching batch export (synchronous inside Altium; this tool call will time out while it runs - expected)');
+        SandboxLog('compile-check the exporter by loading it and calling a harmless entry point');
+        S1 := 'c:\Users\stephen.thompson\Documents\Claude Code\PCB_RL\exporter\Export_PCB_Data.pas';
+        SandboxLog('file exists: ' + BoolToStr(FileExists(S1), True));
+        SandboxLog('running ExportAllPCBsInFolderAuto via RunScriptFile');
         Client.SendMessage('ScriptingSystem:RunScriptFile',
-            'FileName=c:\Users\stephen.thompson\Documents\Claude Code\PCB_RL\exporter\Export_PCB_Data.pas|ProcName=ExportAllPCBsInFolderAuto',
-            512, Client.CurrentView);
-        ResultText := 'batch export finished';
+            'FileName=' + S1 + '|ProcName=ExportAllPCBsInFolderAuto', 512, Client.CurrentView);
+        ResultText := 'dispatched';
         // === END EXPERIMENT ===
     except
         SandboxLog('EXCEPTION escaped the script body');

@@ -18,7 +18,7 @@
 //
 // Set S1 to the target sheet file name before running.
 
-S1 := 'Sheet14.SchDoc';
+S1 := 'Sheet18.SchDoc';
 
 // Exact match FIRST: an unsaved free document's full path is its bare
 // file name, and the project may contain a sheet of the same name
@@ -166,6 +166,111 @@ begin
                   IntToStr(CoordToMils(Obj6.Location.Y)) + '|' + Obj6.Name + '|' +
                   IntToStr(Obj6.IOType) + '|' + IntToStr(Obj6.Style) + '|' +
                   IntToStr(CoordToMils(Obj6.Width)));
+        Obj6 := Obj2.NextSchObject;
+    end;
+    Obj1.SchIterator_Destroy(Obj2);
+
+    // ---- text and body bounding boxes, for the overlap audit --------------
+    // TEXT|kind|owner|text|x1|y1|x2|y2   BODY|desig|x1|y1|x2|y2   (mils)
+    Obj2 := Obj1.SchIterator_Create;
+    Obj2.AddFilter_ObjectSet(MkSet(eSchComponent));
+    Obj6 := Obj2.FirstSchObject;
+    while (Obj6 <> nil) do
+    begin
+        Obj5 := Obj6.Designator.BoundingRectangle;
+        List1.Add('TEXT|DESIG|' + Obj6.Designator.Text + '|' + Obj6.Designator.Text + '|' +
+                  IntToStr(CoordToMils(Obj5.Left)) + '|' + IntToStr(CoordToMils(Obj5.Bottom)) + '|' +
+                  IntToStr(CoordToMils(Obj5.Right)) + '|' + IntToStr(CoordToMils(Obj5.Top)));
+
+        Obj4 := Obj6.SchIterator_Create;
+        Obj4.AddFilter_ObjectSet(MkSet(eParameter));
+        Obj7 := Obj4.FirstSchObject;
+        while (Obj7 <> nil) do
+        begin
+            if (Obj7.IsHidden = False) then
+            begin
+                Obj5 := Obj7.BoundingRectangle;
+                List1.Add('TEXT|PARAM|' + Obj6.Designator.Text + '|' + Obj7.Text + '|' +
+                          IntToStr(CoordToMils(Obj5.Left)) + '|' + IntToStr(CoordToMils(Obj5.Bottom)) + '|' +
+                          IntToStr(CoordToMils(Obj5.Right)) + '|' + IntToStr(CoordToMils(Obj5.Top)));
+            end;
+            Obj7 := Obj4.NextSchObject;
+        end;
+        Obj6.SchIterator_Destroy(Obj4);
+
+        // drawn body only (graphics, no pins, no text)
+        I3 := 999999; I4 := 999999; I5 := -999999; B1 := -999999;
+        Obj4 := Obj6.SchIterator_Create;
+        Obj4.AddFilter_ObjectSet(MkSet(eLine, eRectangle, eArc, ePolyline, eEllipse));
+        Obj7 := Obj4.FirstSchObject;
+        while (Obj7 <> nil) do
+        begin
+            Obj5 := Obj7.BoundingRectangle;
+            if (CoordToMils(Obj5.Left)   < I3) then I3 := CoordToMils(Obj5.Left);
+            if (CoordToMils(Obj5.Bottom) < I4) then I4 := CoordToMils(Obj5.Bottom);
+            if (CoordToMils(Obj5.Right)  > I5) then I5 := CoordToMils(Obj5.Right);
+            if (CoordToMils(Obj5.Top)    > B1) then B1 := CoordToMils(Obj5.Top);
+            Obj7 := Obj4.NextSchObject;
+        end;
+        Obj6.SchIterator_Destroy(Obj4);
+        if (I3 < 999999) then
+            List1.Add('BODY|' + Obj6.Designator.Text + '|' + IntToStr(I3) + '|' + IntToStr(I4) + '|' +
+                      IntToStr(I5) + '|' + IntToStr(B1));
+
+        Obj6 := Obj2.NextSchObject;
+    end;
+    Obj1.SchIterator_Destroy(Obj2);
+
+    Obj2 := Obj1.SchIterator_Create;
+    Obj2.AddFilter_ObjectSet(MkSet(eNetLabel));
+    Obj6 := Obj2.FirstSchObject;
+    while (Obj6 <> nil) do
+    begin
+        Obj5 := Obj6.BoundingRectangle;
+        List1.Add('TEXT|NLBL|-|' + Obj6.Text + '|' +
+                  IntToStr(CoordToMils(Obj5.Left)) + '|' + IntToStr(CoordToMils(Obj5.Bottom)) + '|' +
+                  IntToStr(CoordToMils(Obj5.Right)) + '|' + IntToStr(CoordToMils(Obj5.Top)));
+        Obj6 := Obj2.NextSchObject;
+    end;
+    Obj1.SchIterator_Destroy(Obj2);
+
+    Obj2 := Obj1.SchIterator_Create;
+    Obj2.AddFilter_ObjectSet(MkSet(eLabel));
+    Obj6 := Obj2.FirstSchObject;
+    while (Obj6 <> nil) do
+    begin
+        Obj5 := Obj6.BoundingRectangle;
+        List1.Add('TEXT|NOTE|-|' + Obj6.Text + '|' +
+                  IntToStr(CoordToMils(Obj5.Left)) + '|' + IntToStr(CoordToMils(Obj5.Bottom)) + '|' +
+                  IntToStr(CoordToMils(Obj5.Right)) + '|' + IntToStr(CoordToMils(Obj5.Top)));
+        Obj6 := Obj2.NextSchObject;
+    end;
+    Obj1.SchIterator_Destroy(Obj2);
+
+    // Power ports: BoundingRectangle covers symbol + drawn label
+    Obj2 := Obj1.SchIterator_Create;
+    Obj2.AddFilter_ObjectSet(MkSet(ePowerObject));
+    Obj6 := Obj2.FirstSchObject;
+    while (Obj6 <> nil) do
+    begin
+        Obj5 := Obj6.BoundingRectangle;
+        List1.Add('TEXT|PWR|-|' + Obj6.Text + '|' +
+                  IntToStr(CoordToMils(Obj5.Left)) + '|' + IntToStr(CoordToMils(Obj5.Bottom)) + '|' +
+                  IntToStr(CoordToMils(Obj5.Right)) + '|' + IntToStr(CoordToMils(Obj5.Top)));
+        Obj6 := Obj2.NextSchObject;
+    end;
+    Obj1.SchIterator_Destroy(Obj2);
+
+    // Sheet ports likewise
+    Obj2 := Obj1.SchIterator_Create;
+    Obj2.AddFilter_ObjectSet(MkSet(ePort));
+    Obj6 := Obj2.FirstSchObject;
+    while (Obj6 <> nil) do
+    begin
+        Obj5 := Obj6.BoundingRectangle;
+        List1.Add('TEXT|SPORT|-|' + Obj6.Name + '|' +
+                  IntToStr(CoordToMils(Obj5.Left)) + '|' + IntToStr(CoordToMils(Obj5.Bottom)) + '|' +
+                  IntToStr(CoordToMils(Obj5.Right)) + '|' + IntToStr(CoordToMils(Obj5.Top)));
         Obj6 := Obj2.NextSchObject;
     end;
     Obj1.SchIterator_Destroy(Obj2);

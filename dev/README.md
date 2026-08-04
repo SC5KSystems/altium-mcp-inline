@@ -59,10 +59,36 @@ The verified recipe (`capture_window.capture_document`):
    repeatedly produced convincing screenshots of the WRONG document while
    every API said the right one was current.
 
-Dead ends, measured so they are not retried: RedrawToDC draws blank at all
-nine PrintKind/PrintWhat combos (sheet draws in internal units, off-canvas);
-rendering into a TMetafile records 190KB outside the declared frame and
-rasterizes white.
+**Root cause, measured:** Altium renders a schematic view ONLY when it has
+actually been displayed on screen. A document shown via Client.ShowDocument
+while Altium is a background window gets its tab selected and the frame
+retitled, but the view surface is never painted - PrintWindow then returns
+either the previous document's pixels (convincing and WRONG - check the title
+block inside the drawing, it names the file) or black. Every API-level signal
+(GetCurrentSchDocument, tab highlight, frame title) says the right document is
+current while the pixels are stale.
+
+Getting a real paint requires real activation, and Windows refuses
+SetForegroundWindow to background processes. Measured failures:
+AttachThreadInput trick (refused), minimize/restore (detaches the document
+into a floating window - do NOT do this, it mangles the user's layout),
+SetWindowPos TOPMOST (window visible but canvas still unpainted),
+SendInput click (foreground still refused).
+
+Untried, ranked for next session:
+1. Client:TileAllOpenDocuments - tiling may force every open view to paint
+   at once; capture the frame afterwards.
+2. Alt-key press via SendInput immediately before SetForegroundWindow (the
+   classic foreground-lock release), then paint + capture.
+3. Keep exactly ONE schematic open (close others via Modified:=False +
+   CloseDocument - verified to work) so the only view MUST be the target;
+   combine with 1 or 2.
+
+Also: never name a generated free document like a project sheet. Fresh Altium
+restarts number free docs from Sheet1, colliding with the project's
+Sheet1..13 - GetDocumentByPath then resolves ambiguously. Dead ends measured
+earlier: RedrawToDC blank at all nine combos; TMetafile records outside its
+frame.
 
 ## Diagnosing failures
 
