@@ -78,29 +78,29 @@ begin
 
     try
         // === BEGIN EXPERIMENT (rewritten by dev/sandbox_runner.py) ===
-        // Bring a document to the FRONT of the UI, not just make it "current".
-        // DM_OpenAndFocusDocument updates what SchServer.GetCurrentSchDocument returns
-        // but does not necessarily switch the visible tab, so window captures kept
-        // showing a different sheet while every other signal said the right one was
-        // focused. Client.ShowDocument is what actually changes the UI.
-        S2 := 'Sheet13.SchDoc';
-        Obj3 := Client.GetDocumentByPath(S2);
+        Obj3 := Client.GetDocumentByPath('C:\Users\Public\altium_mcp\rebuilt\Sheet7_rebuilt.SchDoc');
+        if (Obj3 = nil) then
+            Obj3 := Client.OpenDocument('SCH', 'C:\Users\Public\altium_mcp\rebuilt\Sheet7_rebuilt.SchDoc');
         if (Obj3 = nil) then
         begin
-            SandboxLog('no server document for ' + S2);
-            ResultText := '{"error": "document not open"}';
+            ResultText := '{{"error": "cannot open C:\Users\Public\altium_mcp\rebuilt\Sheet7_rebuilt.SchDoc"}}';
+            SandboxLog('ABORT nil');
         end
         else
         begin
             Client.ShowDocument(Obj3);
-            Sleep(1500);
+            Sleep(1200);
             Obj1 := SchServer.GetCurrentSchDocument;
             SandboxLog('current: ' + Obj1.DocumentName);
             ResetParameters;
             AddStringParameter('Action', 'All');
-            RunProcess('Sch:Zoom');
-            SandboxLog('zoomed');
-            ResultText := '{"doc": "' + Obj1.DocumentName + '"}';
+            RunProcess('Sch:Select');
+            ResetParameters;
+            RunProcess('Sch:Copy');
+            ResetParameters;
+            RunProcess('Sch:DeSelect');
+            SandboxLog('copied');
+            ResultText := '{{"ok": true}}';
         end;
         // === END EXPERIMENT ===
     except
