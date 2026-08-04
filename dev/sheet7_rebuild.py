@@ -89,10 +89,10 @@ WIRES = [
     [2700, 4200, 2700, 4500], [2700, 4500, 2700, 5100],
     [2700, 5100, 3300, 5100], [3300, 5100, 3400, 5100],
     [3400, 5100, 4000, 5100], [4000, 5100, 4200, 5100],
-    # after R18: jog down to 4900 immediately (keeps y5100 clear under the
-    # C13/C14 ground-port labels), across, down to U5.19
-    [4800, 5100, 5100, 5100], [5100, 5100, 5100, 4900],
-    [5100, 4900, 6200, 4900], [6200, 4900, 6200, 4500],
+    # after R18: jog down to 4700 (clear of C13/C14 port labels AND of the
+    # RXD row at 4900), across, up-down to U5.19
+    [4800, 5100, 5100, 5100], [5100, 5100, 5100, 4700],
+    [5100, 4700, 6200, 4700], [6200, 4700, 6200, 4500],
     [6200, 4500, 6300, 4500],
     # --- D1 line stubs: DP pins x3300/3400 up to 5100; DN pins x3500/3600 to 4400
     [3300, 4100, 3300, 5100], [3400, 4100, 3400, 5100],
@@ -109,7 +109,10 @@ WIRES = [
     [6300, 3900, 6300, 3700],
     # --- C15 / RESET-N ; TXD
     [8100, 4800, 8600, 4800], [8600, 4500, 8600, 4400],
+    [8600, 4400, 8900, 4400],
     [8100, 4900, 9000, 4900],
+    # RXD (U5.12, left side) out to the UART-MCU2USB port
+    [6300, 4900, 5000, 4900],
     # --- 3V3: rail y5700; U5.4 riser x6100; U5.1 riser x8300; U5.17 riser x8500
     [6300, 5300, 6100, 5300], [6100, 5300, 6100, 5700],
     [8100, 5300, 8300, 5300], [8300, 5300, 8300, 5700],
@@ -136,11 +139,9 @@ LABELS = [
     (2750, 4400, "USB-DN"),
     (2800, 5100, "USB-DP"),
     (5500, 4400, "USB-DN-R"),
-    (5100, 4900, "USB-DP-R"),
+    (5300, 4700, "USB-DP-R"),
     (6100, 3900, "XTAL-IN"),
     (5400, 4200, "XTAL-OUT"),
-    (8600, 4400, "RESET-N"),
-    (8800, 4900, "UART-USB2MCU"),
 ]
 
 GND_PORTS = [
@@ -179,6 +180,9 @@ def emit_spec():
     for x, y, t in LABELS:
         lines.append(f"NETLABEL|{x}|{y}|0|{t}")
     lines.append("POWER|8500|5700|1|2|3V3|1")
+    lines.append("SPORT|8900|4400|RESET-N|1|0|900")
+    lines.append("SPORT|9000|4900|UART-USB2MCU|1|0|900")
+    lines.append("SPORT|4100|4900|UART-MCU2USB|2|2|900")
     for x, y in GND_PORTS:
         lines.append(f"POWER|{x}|{y}|3|5|GND|0")
     for x, y, t in NOTES:

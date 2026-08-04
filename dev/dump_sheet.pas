@@ -18,7 +18,7 @@
 //
 // Set S1 to the target sheet file name before running.
 
-S1 := 'Sheet18.SchDoc';
+S1 := 'Sheet14.SchDoc';
 
 // Exact match FIRST: an unsaved free document's full path is its bare
 // file name, and the project may contain a sheet of the same name

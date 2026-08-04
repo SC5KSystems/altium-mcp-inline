@@ -78,30 +78,18 @@ begin
 
     try
         // === BEGIN EXPERIMENT (rewritten by dev/sandbox_runner.py) ===
-        Obj3 := Client.GetDocumentByPath('C:\Users\Public\altium_mcp\rebuilt\Sheet7_rebuilt.SchDoc');
-        if (Obj3 = nil) then
-            Obj3 := Client.OpenDocument('SCH', 'C:\Users\Public\altium_mcp\rebuilt\Sheet7_rebuilt.SchDoc');
-        if (Obj3 = nil) then
+        Obj3 := Client.GetDocumentByPath('Sheet14.SchDoc');
+        if (Obj3 <> nil) then
         begin
-            ResultText := '{{"error": "cannot open C:\Users\Public\altium_mcp\rebuilt\Sheet7_rebuilt.SchDoc"}}';
-            SandboxLog('ABORT nil');
-        end
-        else
-        begin
-            Client.ShowDocument(Obj3);
-            Sleep(1200);
-            Obj1 := SchServer.GetCurrentSchDocument;
-            SandboxLog('current: ' + Obj1.DocumentName);
-            ResetParameters;
-            AddStringParameter('Action', 'All');
-            RunProcess('Sch:Select');
-            ResetParameters;
-            RunProcess('Sch:Copy');
-            ResetParameters;
-            RunProcess('Sch:DeSelect');
-            SandboxLog('copied');
-            ResultText := '{{"ok": true}}';
+            if (Pos('Cerillo', Obj3.FileName) > 0) then
+                SandboxLog('ABORT: project sheet matched')
+            else
+            begin
+                Obj3.DoSafeChangeFileNameAndSave('C:\Users\Public\altium_mcp\rebuilt\Sheet7_rebuilt.SchDoc', 'SCH');
+                SandboxLog('saved');
+            end;
         end;
+        ResultText := '{"ok": true}';
         // === END EXPERIMENT ===
     except
         SandboxLog('EXCEPTION escaped the experiment body');

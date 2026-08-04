@@ -1885,6 +1885,24 @@ begin
             GfxCount := GfxCount + 1;
         end
 
+        else if (Kind = 'SPORT') then
+        begin
+            // Sheet port: SPORT|x|y|name|iotype|style|width
+            // IOType: 0=unspecified 1=output 2=input 3=bidirectional.
+            // Location is the port's connection-side end; wire to it.
+            Obj := SchServer.SchObjectFactory(ePort, eCreate_GlobalCopy);
+            Obj.Location := Point(MilsToCoord(StrToInt(GetFieldFromPipeString(Rec, 1))),
+                                  MilsToCoord(StrToInt(GetFieldFromPipeString(Rec, 2))));
+            Obj.Name := GetFieldFromPipeString(Rec, 3);
+            Obj.IOType := StrToInt(GetFieldFromPipeString(Rec, 4));
+            Obj.Style := StrToInt(GetFieldFromPipeString(Rec, 5));
+            Obj.Width := MilsToCoord(StrToInt(GetFieldFromPipeString(Rec, 6)));
+            TargetDoc.RegisterSchObjectInContainer(Obj);
+            SchServer.RobotManager.SendMessage(TargetDoc.I_ObjectAddress, c_BroadCast,
+                SCHM_PrimitiveRegistration, Obj.I_ObjectAddress);
+            GfxCount := GfxCount + 1;
+        end
+
         else if (Kind = 'NOTE') then
         begin
             Obj := SchServer.SchObjectFactory(eLabel, eCreate_GlobalCopy);

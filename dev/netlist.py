@@ -90,14 +90,26 @@ def build(recs):
     names = defaultdict(list)   # root -> [(priority, name)]
     for x, y, text, _style in ((int(a[0]), int(a[1]), a[2], a[3]) for a in recs.get("PWR", [])):
         names[dsu.find(("pt", x, y))].append((0, text))
+    # A port connects at whichever of its ends touches a wire: Location, or
+    # Location +/- Width along x (horizontal ports). Try each candidate as an
+    # exact wire-endpoint first, then as a segment-interior touch.
     for rec in recs.get("PORT", []):
         x, y, text, w = int(rec[0]), int(rec[1]), rec[2], int(rec[5])
+        attached = False
         for cand in ((x, y), (x + w, y), (x - w, y)):
-            root = dsu.find(("pt",) + cand)
-            if any(k[0] == "pin" and dsu.find(k) == root for k in
-                   (("pin",) + p for p in [])) or True:
-                names[root].append((1, text))
+            if ("pt",) + cand in dsu.p:
+                names[dsu.find(("pt",) + cand)].append((1, text))
+                attached = True
                 break
+        if not attached:
+            for cand in ((x, y), (x + w, y), (x - w, y)):
+                for s_ in segs:
+                    if on_interior(cand, s_):
+                        names[dsu.find(("pt",) + s_[:2])].append((1, text))
+                        attached = True
+                        break
+                if attached:
+                    break
     for x, y, text in ((int(a[0]), int(a[1]), a[2]) for a in recs.get("NLBL", [])):
         pt = (x, y)
         root = None
