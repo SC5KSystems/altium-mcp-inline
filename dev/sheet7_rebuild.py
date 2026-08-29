@@ -27,12 +27,9 @@ import time
 
 sp = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(sp))
-scratch = pathlib.Path(r"C:\Users\STEPHE~1.THO\AppData\Local\Temp\claude"
-                       r"\c--Users-stephen-thompson-Documents-Claude-Code-Install-MCP"
-                       r"\0ddffb23-6747-441e-a3fe-a86d250bbc33\scratchpad")
 EX = pathlib.Path("C:/Users/Public/altium_mcp")
 
-db = json.load(open(scratch / "sheet7_parts.json"))
+db = json.load(open(sp / "sheet7_parts.json"))
 
 PLACE = [  # desig, pn, x, y, orient, mirror
     ("J2", "6112-0120", 2600, 2600, 0, 1),

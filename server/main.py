@@ -1195,8 +1195,9 @@ async def run_altium_script(ctx: Context, script: str, timeout_seconds: int = 12
             "last_step_reached": steps[-1],
             "diagnosis": "The statement AFTER the last step is what crashed or paused the script.",
             "executor_wedged": True,
-            "recovery": "Altium's script executor is now blocked: stop the paused script "
-                        "(script editor, Ctrl+F3) or restart Altium before running anything else.",
+            "recovery": "Altium's script executor is now blocked. Recover by running this "
+                        "shell command (sends the debugger Stop process to the running "
+                        "Altium): \"<altium_exe>\" -REditScript:Stop  -- then retry.",
             "steps": steps,
             "dialogs_dismissed": dialogs}, indent=2)
 
@@ -1206,8 +1207,9 @@ async def run_altium_script(ctx: Context, script: str, timeout_seconds: int = 12
         "diagnosis": "Usually a COMPILE error in the script, or a previously paused "
                      "script blocking execution.",
         "executor_wedged": True,
-        "recovery": "Check Altium's script editor for a paused line; stop it (Ctrl+F3) "
-                    "or restart Altium.",
+        "recovery": "A previously paused script may be blocking execution. Recover by "
+                    "running this shell command: \"<altium_exe>\" -REditScript:Stop  "
+                    "-- then retry. If it still fails, the script itself has a COMPILE error.",
         "dialogs_dismissed": dialogs}, indent=2)
 
 
