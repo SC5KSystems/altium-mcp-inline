@@ -2403,6 +2403,176 @@ async def get_pcb_rules(ctx: Context) -> str:
     return json.dumps(rules_data, indent=2)
 
 @mcp.tool()
+async def get_net_geometry_summary(ctx: Context, net_names: list = None) -> str:
+    """
+    Answer "is this net wide enough" for one or more nets, in a single call.
+
+    This is the primary geometry interface. It returns derived values rather
+    than raw copper, because a dense board's segment list will not fit in a
+    context window. Reach for get_track_data, get_polygon_data or get_vias
+    only when you need the underlying primitives.
+
+    Per net it reports track/arc/via/polygon counts, the minimum and maximum
+    routed track width, total routed length, the location of the narrowest
+    segment, the layers carrying pours and their outline area - and the
+    polygon-connect rule Altium actually applies to each pad on the net.
+
+    That last part is usually where the real bottleneck is. A net poured as a
+    wide plane but entered through four 8 mil thermal relief spokes carries
+    what the spokes carry, not what the pour could. `pad_connections` groups
+    the distinct rule outcomes, naming the rule and its scope expressions, so
+    a net silently falling through to a default Relief rule is visible
+    immediately. `min_relief_conductor_mils` is the narrowest such spoke.
+
+    A net with no copper at all still returns an entry, with zeros - silence
+    would be indistinguishable from a failed call.
+
+    Args:
+        net_names (list, optional): Net names to summarize, e.g. ["RECT+", "GND"].
+            Omit to summarize every net on the board.
+
+    Returns:
+        str: JSON array, one object per net.
+    """
+    logger.info(f"Getting net geometry summary for: {net_names or 'all nets'}")
+
+    response = await altium_bridge.execute_command(
+        "get_net_geometry_summary",
+        {"net_names": net_names or []}
+    )
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error getting net geometry summary: {error_msg}")
+        return json.dumps({"error": f"Failed to get net geometry summary: {error_msg}"})
+
+    summary = response.get("result", [])
+    if not summary:
+        return json.dumps({"message": "No matching nets found in the current PCB document"})
+
+    logger.info(f"Retrieved geometry summary for {len(summary)} net(s)")
+    return json.dumps(summary, indent=2)
+
+
+@mcp.tool()
+async def get_track_data(ctx: Context, net_names: list = None, include_segments: bool = False) -> str:
+    """
+    Get routed copper (tracks and arcs) per net.
+
+    Aggregates by default: counts, min/max width, total length, and where the
+    narrowest segment sits. Set include_segments to add every individual
+    segment with its endpoints - only do that for a handful of nets, since a
+    dense board produces thousands of entries.
+
+    Note that a net with no tracks is not necessarily unrouted. Power nets are
+    often poured entirely as polygons; check get_polygon_data before concluding
+    a net carries no copper.
+
+    Args:
+        net_names (list, optional): Net names to report. Omit for every net.
+        include_segments (bool): Include per-segment detail. Default False.
+
+    Returns:
+        str: JSON array, one object per net that has routed copper. Coordinates
+             and widths are in mils.
+    """
+    logger.info(f"Getting track data for: {net_names or 'all nets'} (segments={include_segments})")
+
+    response = await altium_bridge.execute_command(
+        "get_track_data",
+        {"net_names": net_names or [], "include_segments": include_segments}
+    )
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error getting track data: {error_msg}")
+        return json.dumps({"error": f"Failed to get track data: {error_msg}"})
+
+    tracks = response.get("result", [])
+    if not tracks:
+        return json.dumps({"message": "No routed tracks found for the requested nets"})
+
+    logger.info(f"Retrieved track data for {len(tracks)} net(s)")
+    return json.dumps(tracks, indent=2)
+
+
+@mcp.tool()
+async def get_polygon_data(ctx: Context, net_names: list = None) -> str:
+    """
+    Get copper pours per net, with the settings that decide how much copper
+    actually ends up in them.
+
+    Each polygon reports its layer, outline vertices, bounding box and outline
+    area, plus pour_over, remove_dead_copper, remove_narrow_necks and the neck
+    threshold. Note that outline_area_sq_mils measures the polygon boundary and
+    does not subtract cutouts or account for arced edges, so treat it as an
+    upper bound on copper.
+
+    To see how pads connect into these pours, use get_net_geometry_summary -
+    that resolves the governing polygon-connect rule.
+
+    Args:
+        net_names (list, optional): Net names to report. Omit for every net.
+
+    Returns:
+        str: JSON array, one object per polygon. Coordinates are in mils.
+    """
+    logger.info(f"Getting polygon data for: {net_names or 'all nets'}")
+
+    response = await altium_bridge.execute_command(
+        "get_polygon_data",
+        {"net_names": net_names or []}
+    )
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error getting polygon data: {error_msg}")
+        return json.dumps({"error": f"Failed to get polygon data: {error_msg}"})
+
+    polygons = response.get("result", [])
+    if not polygons:
+        return json.dumps({"message": "No polygons found for the requested nets"})
+
+    logger.info(f"Retrieved {len(polygons)} polygon(s)")
+    return json.dumps(polygons, indent=2)
+
+
+@mcp.tool()
+async def get_vias(ctx: Context, net_names: list = None) -> str:
+    """
+    Get vias per net: position, pad and hole diameter, and layer span.
+
+    Via count and size matter for current capacity on power nets - a plane
+    stitched to another layer through too few vias necks down exactly like a
+    thin trace.
+
+    Args:
+        net_names (list, optional): Net names to report. Omit for every net.
+
+    Returns:
+        str: JSON array, one object per via. Coordinates and diameters are in mils.
+    """
+    logger.info(f"Getting vias for: {net_names or 'all nets'}")
+
+    response = await altium_bridge.execute_command(
+        "get_vias",
+        {"net_names": net_names or []}
+    )
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error getting vias: {error_msg}")
+        return json.dumps({"error": f"Failed to get vias: {error_msg}"})
+
+    vias = response.get("result", [])
+    if not vias:
+        return json.dumps({"message": "No vias found for the requested nets"})
+
+    logger.info(f"Retrieved {len(vias)} via(s)")
+    return json.dumps(vias, indent=2)
+
+
+@mcp.tool()
 async def get_pcb_layer_stackup(ctx: Context) -> str:
     """
     Get the detailed layer stackup information from the current Altium PCB including

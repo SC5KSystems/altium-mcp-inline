@@ -1011,6 +1011,101 @@ begin
     end;
 end;
 
+// Pull a "net_names": [...] array out of the request. An absent or empty array
+// means "every net", which the geometry functions treat as no filter.
+procedure ParseNetNamesRequest(RequestData: TStringList; NetNames: TStringList);
+var
+    i          : Integer;
+    ParamValue : String;
+begin
+    // Net names are matched case-insensitively; Altium does not distinguish.
+    NetNames.CaseSensitive := False;
+    for i := 0 to RequestData.Count - 1 do
+    begin
+        if (Pos('"net_names"', RequestData[i]) > 0) then
+        begin
+            i := i + 1;
+            while (i < RequestData.Count) and (Pos(']', RequestData[i]) = 0) do
+            begin
+                ParamValue := RequestData[i];
+                ParamValue := StringReplace(ParamValue, '"', '', REPLACEALL);
+                ParamValue := StringReplace(ParamValue, ',', '', REPLACEALL);
+                ParamValue := Trim(ParamValue);
+                if (ParamValue <> '') and (ParamValue <> '[') then
+                    NetNames.Add(ParamValue);
+                i := i + 1;
+            end;
+        end;
+    end;
+end;
+
+function ExecuteGetTrackData(RequestData: TStringList): String;
+var
+    NetNames        : TStringList;
+    i, ValueStart   : Integer;
+    IncludeSegments : Boolean;
+    ParamValue      : String;
+begin
+    NetNames := TStringList.Create;
+    try
+        ParseNetNamesRequest(RequestData, NetNames);
+
+        IncludeSegments := False;
+        for i := 0 to RequestData.Count - 1 do
+        begin
+            if (Pos('"include_segments"', RequestData[i]) > 0) then
+            begin
+                ValueStart := Pos(':', RequestData[i]) + 1;
+                ParamValue := Copy(RequestData[i], ValueStart, Length(RequestData[i]) - ValueStart + 1);
+                IncludeSegments := (Pos('true', LowerCase(TrimJSON(ParamValue))) > 0);
+            end;
+        end;
+
+        Result := GetTrackData(ROOT_DIR, NetNames, IncludeSegments);
+    finally
+        NetNames.Free;
+    end;
+end;
+
+function ExecuteGetPolygonData(RequestData: TStringList): String;
+var
+    NetNames : TStringList;
+begin
+    NetNames := TStringList.Create;
+    try
+        ParseNetNamesRequest(RequestData, NetNames);
+        Result := GetPolygonData(ROOT_DIR, NetNames);
+    finally
+        NetNames.Free;
+    end;
+end;
+
+function ExecuteGetVias(RequestData: TStringList): String;
+var
+    NetNames : TStringList;
+begin
+    NetNames := TStringList.Create;
+    try
+        ParseNetNamesRequest(RequestData, NetNames);
+        Result := GetViasData(ROOT_DIR, NetNames);
+    finally
+        NetNames.Free;
+    end;
+end;
+
+function ExecuteGetNetGeometrySummary(RequestData: TStringList): String;
+var
+    NetNames : TStringList;
+begin
+    NetNames := TStringList.Create;
+    try
+        ParseNetNamesRequest(RequestData, NetNames);
+        Result := GetNetGeometrySummary(ROOT_DIR, NetNames);
+    finally
+        NetNames.Free;
+    end;
+end;
+
 // Function to execute a command with parameters
 function ExecuteCommand(CommandName: String): String;
 var
@@ -1093,6 +1188,14 @@ begin
             Result := ExecuteLayoutDuplicatorApply(RequestData);            
         'get_pcb_rules':
             Result := GetPCBRules(ROOT_DIR);
+        'get_track_data':
+            Result := ExecuteGetTrackData(RequestData);
+        'get_polygon_data':
+            Result := ExecuteGetPolygonData(RequestData);
+        'get_vias':
+            Result := ExecuteGetVias(RequestData);
+        'get_net_geometry_summary':
+            Result := ExecuteGetNetGeometrySummary(RequestData);
         'get_output_job_containers':
             Result := ExecuteGetOutputJobContainers(RequestData);
         'run_output_jobs':

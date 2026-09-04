@@ -2617,3 +2617,772 @@ begin
         PlacedArray.Free;
     end;
 end;
+
+{..............................................................................}
+{ Net geometry reads.                                                          }
+{                                                                              }
+{ A net can carry no tracks at all and still be a power path, poured entirely  }
+{ as polygon copper - so tracks, arcs, vias and polygons are each reported     }
+{ separately rather than collapsed into one "width" number. The summary adds   }
+{ the polygon-connect rule that governs how pads actually enter a pour, which  }
+{ is usually the real bottleneck: a wide pour reached through relief spokes    }
+{ carries only what the spokes carry.                                          }
+{                                                                              }
+{ Coordinates and sizes are mils throughout, matching get_net_connections.     }
+{..............................................................................}
+
+// Empty or nil NetNames means "every net". Caller sets CaseSensitive := False.
+function NetRequested(NetNames: TStringList; NetName: String): Boolean;
+begin
+    if NetNames = nil then
+        Result := True
+    else if NetNames.Count = 0 then
+        Result := True
+    else
+        Result := NetNames.IndexOf(NetName) >= 0;
+end;
+
+// Net name of a primitive, or '' when it belongs to no net.
+function PrimNetName(Prim: IPCB_Primitive): String;
+begin
+    Result := '';
+    if Prim = nil then Exit;
+    if Prim.Net <> nil then Result := Prim.Net.Name;
+end;
+
+// Straight-line length of a track, in mils.
+function TrackLengthMils(Track: IPCB_Track): Double;
+var
+    dx, dy : Double;
+begin
+    dx := CoordToMils(Track.X2) - CoordToMils(Track.X1);
+    dy := CoordToMils(Track.Y2) - CoordToMils(Track.Y1);
+    Result := Sqrt(dx * dx + dy * dy);
+end;
+
+// Arc length along the centreline, in mils.
+function ArcLengthMils(Arc: IPCB_Arc): Double;
+var
+    Sweep : Double;
+begin
+    Sweep := Arc.EndAngle - Arc.StartAngle;
+    while Sweep < 0 do Sweep := Sweep + 360;
+    Result := CoordToMils(Arc.Radius) * (Sweep * PI / 180);
+end;
+
+// Human-readable polygon connect style. Altium orders these
+// relief / direct / none; anything else is reported raw rather than guessed at.
+function ConnectStyleName(StyleValue: Integer): String;
+begin
+    case StyleValue of
+        0: Result := 'Relief';
+        1: Result := 'Direct';
+        2: Result := 'NoConnect';
+    else
+        Result := 'Unknown(' + IntToStr(StyleValue) + ')';
+    end;
+end;
+
+{..............................................................................}
+{ Single board pass collecting every geometry primitive on the requested nets  }
+{ into pipe-delimited lines. Aggregating from this list afterwards keeps the   }
+{ board iteration itself cheap and shared by all four tools.                   }
+{                                                                              }
+{   TRACK|net|layer|width|length|x1|y1|x2|y2                                   }
+{   ARC  |net|layer|width|length|xc|yc|radius|start|end                        }
+{   VIA  |net|lowlayer|size|hole|x|y|highlayer                                 }
+{..............................................................................}
+procedure CollectNetGeometry(Board: IPCB_Board; NetNames: TStringList; Raw: TStringList);
+var
+    Iterator : IPCB_BoardIterator;
+    Prim     : IPCB_Primitive;
+    NetName  : String;
+begin
+    // Tracks
+    Iterator := Board.BoardIterator_Create;
+    Iterator.AddFilter_ObjectSet(MkSet(eTrackObject));
+    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_Method(eProcessAll);
+    Prim := Iterator.FirstPCBObject;
+    while (Prim <> nil) do
+    begin
+        NetName := PrimNetName(Prim);
+        if (NetName <> '') and NetRequested(NetNames, NetName) then
+            Raw.Add('TRACK|' + NetName + '|' + Board.LayerName(Prim.Layer) + '|' +
+                    FloatToStr(CoordToMils(Prim.Width)) + '|' +
+                    FloatToStr(TrackLengthMils(Prim)) + '|' +
+                    FloatToStr(CoordToMils(Prim.X1)) + '|' + FloatToStr(CoordToMils(Prim.Y1)) + '|' +
+                    FloatToStr(CoordToMils(Prim.X2)) + '|' + FloatToStr(CoordToMils(Prim.Y2)));
+        Prim := Iterator.NextPCBObject;
+    end;
+    Board.BoardIterator_Destroy(Iterator);
+
+    // Arcs carry current exactly as tracks do, so they belong in the same totals.
+    Iterator := Board.BoardIterator_Create;
+    Iterator.AddFilter_ObjectSet(MkSet(eArcObject));
+    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_Method(eProcessAll);
+    Prim := Iterator.FirstPCBObject;
+    while (Prim <> nil) do
+    begin
+        NetName := PrimNetName(Prim);
+        if (NetName <> '') and NetRequested(NetNames, NetName) then
+            Raw.Add('ARC|' + NetName + '|' + Board.LayerName(Prim.Layer) + '|' +
+                    FloatToStr(CoordToMils(Prim.LineWidth)) + '|' +
+                    FloatToStr(ArcLengthMils(Prim)) + '|' +
+                    FloatToStr(CoordToMils(Prim.XCenter)) + '|' + FloatToStr(CoordToMils(Prim.YCenter)) + '|' +
+                    FloatToStr(CoordToMils(Prim.Radius)) + '|' +
+                    FloatToStr(Prim.StartAngle) + '|' + FloatToStr(Prim.EndAngle));
+        Prim := Iterator.NextPCBObject;
+    end;
+    Board.BoardIterator_Destroy(Iterator);
+
+    // Vias
+    Iterator := Board.BoardIterator_Create;
+    Iterator.AddFilter_ObjectSet(MkSet(eViaObject));
+    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_Method(eProcessAll);
+    Prim := Iterator.FirstPCBObject;
+    while (Prim <> nil) do
+    begin
+        NetName := PrimNetName(Prim);
+        if (NetName <> '') and NetRequested(NetNames, NetName) then
+            Raw.Add('VIA|' + NetName + '|' + Board.LayerName(Prim.LowLayer) + '|' +
+                    FloatToStr(CoordToMils(Prim.Size)) + '|' +
+                    FloatToStr(CoordToMils(Prim.HoleSize)) + '|' +
+                    FloatToStr(CoordToMils(Prim.x)) + '|' + FloatToStr(CoordToMils(Prim.y)) + '|' +
+                    Board.LayerName(Prim.HighLayer));
+        Prim := Iterator.NextPCBObject;
+    end;
+    Board.BoardIterator_Destroy(Iterator);
+end;
+
+// Shoelace area of a polygon's OUTLINE, in square mils. Cutouts and arced
+// outline edges are not subtracted, so treat this as an upper bound on copper.
+function PolygonOutlineAreaSqMils(Poly: IPCB_Primitive): Double;
+var
+    i, n                : Integer;
+    x1, y1, x2, y2, Acc : Double;
+begin
+    Result := 0;
+    n := Poly.PointCount;
+    if n < 3 then Exit;
+    Acc := 0;
+    for i := 0 to n - 1 do
+    begin
+        x1 := CoordToMils(Poly.Segments[i].vx);
+        y1 := CoordToMils(Poly.Segments[i].vy);
+        if i = n - 1 then
+        begin
+            x2 := CoordToMils(Poly.Segments[0].vx);
+            y2 := CoordToMils(Poly.Segments[0].vy);
+        end
+        else
+        begin
+            x2 := CoordToMils(Poly.Segments[i + 1].vx);
+            y2 := CoordToMils(Poly.Segments[i + 1].vy);
+        end;
+        Acc := Acc + (x1 * y2 - x2 * y1);
+    end;
+    Result := Abs(Acc) / 2;
+end;
+
+// Distinct net names present in a collected geometry list.
+procedure DistinctNetsFromRaw(Raw: TStringList; Nets: TStringList);
+var
+    i : Integer;
+begin
+    // Altium does not distinguish net-name case, so neither should the dedupe.
+    Nets.CaseSensitive := False;
+    Nets.Duplicates := dupIgnore;
+    Nets.Sorted := True;
+    for i := 0 to Raw.Count - 1 do
+        Nets.Add(GetFieldFromPipeString(Raw[i], 1));
+end;
+
+{..............................................................................}
+{ get_track_data - routed copper per net.                                      }
+{ Segment detail is opt-in because a dense board produces thousands of lines   }
+{ and the caller usually only wants the aggregate.                             }
+{..............................................................................}
+function GetTrackData(ROOT_DIR: String; NetNames: TStringList; IncludeSegments: Boolean): String;
+var
+    Board                : IPCB_Board;
+    Raw, Nets            : TStringList;
+    NetEntries           : TStringList;
+    Props, Segs          : TStringList;
+    SegProps             : TStringList;
+    OutputLines          : TStringList;
+    i, n                 : Integer;
+    NetName, Kind, Line  : String;
+    TrackCount, ArcCount : Integer;
+    MinW, MaxW, TotLen, W : Double;
+    NarrowX, NarrowY     : Double;
+    NarrowLayer          : String;
+begin
+    Result := '{"success": false, "error": "No PCB document is currently active - open a .PcbDoc and retry"}';
+    Board := GetBoardSafe(0);
+    if Board = nil then Exit;
+
+    Raw := TStringList.Create;
+    Nets := TStringList.Create;
+    NetEntries := TStringList.Create;
+    try
+        CollectNetGeometry(Board, NetNames, Raw);
+        DistinctNetsFromRaw(Raw, Nets);
+
+        for n := 0 to Nets.Count - 1 do
+        begin
+            NetName := Nets[n];
+            TrackCount := 0;
+            ArcCount := 0;
+            MinW := 0;
+            MaxW := 0;
+            TotLen := 0;
+            NarrowX := 0;
+            NarrowY := 0;
+            NarrowLayer := '';
+
+            Segs := TStringList.Create;
+            try
+                for i := 0 to Raw.Count - 1 do
+                begin
+                    Line := Raw[i];
+                    if GetFieldFromPipeString(Line, 1) = NetName then
+                    begin
+                        Kind := GetFieldFromPipeString(Line, 0);
+                        if (Kind = 'TRACK') or (Kind = 'ARC') then
+                        begin
+                            W := SafeStrToFloat(GetFieldFromPipeString(Line, 3));
+                            TotLen := TotLen + SafeStrToFloat(GetFieldFromPipeString(Line, 4));
+                            if Kind = 'TRACK' then
+                                TrackCount := TrackCount + 1
+                            else
+                                ArcCount := ArcCount + 1;
+
+                            if (MinW = 0) or (W < MinW) then
+                            begin
+                                MinW := W;
+                                NarrowLayer := GetFieldFromPipeString(Line, 2);
+                                // Midpoint for a track, centre for an arc - either way
+                                // a coordinate the caller can jump to in the editor.
+                                if Kind = 'TRACK' then
+                                begin
+                                    NarrowX := (SafeStrToFloat(GetFieldFromPipeString(Line, 5)) +
+                                                SafeStrToFloat(GetFieldFromPipeString(Line, 7))) / 2;
+                                    NarrowY := (SafeStrToFloat(GetFieldFromPipeString(Line, 6)) +
+                                                SafeStrToFloat(GetFieldFromPipeString(Line, 8))) / 2;
+                                end
+                                else
+                                begin
+                                    NarrowX := SafeStrToFloat(GetFieldFromPipeString(Line, 5));
+                                    NarrowY := SafeStrToFloat(GetFieldFromPipeString(Line, 6));
+                                end;
+                            end;
+                            if W > MaxW then MaxW := W;
+
+                            if IncludeSegments then
+                            begin
+                                SegProps := TStringList.Create;
+                                try
+                                    AddJSONProperty(SegProps, 'kind', LowerCase(Kind));
+                                    AddJSONProperty(SegProps, 'layer', GetFieldFromPipeString(Line, 2));
+                                    AddJSONNumber(SegProps, 'width_mils', W);
+                                    AddJSONNumber(SegProps, 'length_mils', SafeStrToFloat(GetFieldFromPipeString(Line, 4)));
+                                    if Kind = 'TRACK' then
+                                    begin
+                                        AddJSONNumber(SegProps, 'x1', SafeStrToFloat(GetFieldFromPipeString(Line, 5)));
+                                        AddJSONNumber(SegProps, 'y1', SafeStrToFloat(GetFieldFromPipeString(Line, 6)));
+                                        AddJSONNumber(SegProps, 'x2', SafeStrToFloat(GetFieldFromPipeString(Line, 7)));
+                                        AddJSONNumber(SegProps, 'y2', SafeStrToFloat(GetFieldFromPipeString(Line, 8)));
+                                    end
+                                    else
+                                    begin
+                                        AddJSONNumber(SegProps, 'x_center', SafeStrToFloat(GetFieldFromPipeString(Line, 5)));
+                                        AddJSONNumber(SegProps, 'y_center', SafeStrToFloat(GetFieldFromPipeString(Line, 6)));
+                                        AddJSONNumber(SegProps, 'radius_mils', SafeStrToFloat(GetFieldFromPipeString(Line, 7)));
+                                        AddJSONNumber(SegProps, 'start_angle', SafeStrToFloat(GetFieldFromPipeString(Line, 8)));
+                                        AddJSONNumber(SegProps, 'end_angle', SafeStrToFloat(GetFieldFromPipeString(Line, 9)));
+                                    end;
+                                    Segs.Add(BuildJSONObject(SegProps));
+                                finally
+                                    SegProps.Free;
+                                end;
+                            end;
+                        end;
+                    end;
+                end;
+
+                if (TrackCount + ArcCount) > 0 then
+                begin
+                    Props := TStringList.Create;
+                    try
+                        AddJSONProperty(Props, 'net', NetName);
+                        AddJSONInteger(Props, 'track_count', TrackCount);
+                        AddJSONInteger(Props, 'arc_count', ArcCount);
+                        AddJSONNumber(Props, 'min_width_mils', MinW);
+                        AddJSONNumber(Props, 'max_width_mils', MaxW);
+                        AddJSONNumber(Props, 'total_length_mils', TotLen);
+                        AddJSONProperty(Props, 'narrowest_layer', NarrowLayer);
+                        AddJSONNumber(Props, 'narrowest_x', NarrowX);
+                        AddJSONNumber(Props, 'narrowest_y', NarrowY);
+                        if IncludeSegments then
+                            Props.Add(Trim(BuildJSONArray(Segs, 'segments')));
+                        NetEntries.Add(BuildJSONObject(Props));
+                    finally
+                        Props.Free;
+                    end;
+                end;
+            finally
+                Segs.Free;
+            end;
+        end;
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONArray(NetEntries);
+            Result := WriteJSONToFile(OutputLines, ROOT_DIR + '\temp_track_data.json');
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        NetEntries.Free;
+        Nets.Free;
+        Raw.Free;
+    end;
+end;
+
+{..............................................................................}
+{ get_vias - via positions, sizes and layer span per net.                      }
+{..............................................................................}
+function GetViasData(ROOT_DIR: String; NetNames: TStringList): String;
+var
+    Board       : IPCB_Board;
+    Raw         : TStringList;
+    Entries     : TStringList;
+    Props       : TStringList;
+    OutputLines : TStringList;
+    i           : Integer;
+    Line        : String;
+begin
+    Result := '{"success": false, "error": "No PCB document is currently active - open a .PcbDoc and retry"}';
+    Board := GetBoardSafe(0);
+    if Board = nil then Exit;
+
+    Raw := TStringList.Create;
+    Entries := TStringList.Create;
+    try
+        CollectNetGeometry(Board, NetNames, Raw);
+        for i := 0 to Raw.Count - 1 do
+        begin
+            Line := Raw[i];
+            if GetFieldFromPipeString(Line, 0) = 'VIA' then
+            begin
+                Props := TStringList.Create;
+                try
+                    AddJSONProperty(Props, 'net', GetFieldFromPipeString(Line, 1));
+                    AddJSONNumber(Props, 'x', SafeStrToFloat(GetFieldFromPipeString(Line, 5)));
+                    AddJSONNumber(Props, 'y', SafeStrToFloat(GetFieldFromPipeString(Line, 6)));
+                    AddJSONNumber(Props, 'pad_diameter_mils', SafeStrToFloat(GetFieldFromPipeString(Line, 3)));
+                    AddJSONNumber(Props, 'hole_diameter_mils', SafeStrToFloat(GetFieldFromPipeString(Line, 4)));
+                    AddJSONProperty(Props, 'low_layer', GetFieldFromPipeString(Line, 2));
+                    AddJSONProperty(Props, 'high_layer', GetFieldFromPipeString(Line, 7));
+                    Entries.Add(BuildJSONObject(Props));
+                finally
+                    Props.Free;
+                end;
+            end;
+        end;
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONArray(Entries);
+            Result := WriteJSONToFile(OutputLines, ROOT_DIR + '\temp_vias_data.json');
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        Entries.Free;
+        Raw.Free;
+    end;
+end;
+
+{..............................................................................}
+{ get_polygon_data - pours per net, with the settings that decide how much     }
+{ copper actually ends up there.                                               }
+{..............................................................................}
+function GetPolygonData(ROOT_DIR: String; NetNames: TStringList): String;
+var
+    Board        : IPCB_Board;
+    Iterator     : IPCB_BoardIterator;
+    Poly         : IPCB_Primitive;
+    Entries      : TStringList;
+    Props, Verts : TStringList;
+    VProps       : TStringList;
+    OutputLines  : TStringList;
+    NetName      : String;
+    i            : Integer;
+begin
+    Result := '{"success": false, "error": "No PCB document is currently active - open a .PcbDoc and retry"}';
+    Board := GetBoardSafe(0);
+    if Board = nil then Exit;
+
+    Entries := TStringList.Create;
+    try
+        Iterator := Board.BoardIterator_Create;
+        Iterator.AddFilter_ObjectSet(MkSet(ePolyObject));
+        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+        Poly := Iterator.FirstPCBObject;
+        while (Poly <> nil) do
+        begin
+            NetName := PrimNetName(Poly);
+            if (NetName <> '') and NetRequested(NetNames, NetName) then
+            begin
+                Props := TStringList.Create;
+                Verts := TStringList.Create;
+                try
+                    AddJSONProperty(Props, 'net', NetName);
+                    AddJSONProperty(Props, 'layer', Board.LayerName(Poly.Layer));
+                    AddJSONInteger(Props, 'vertex_count', Poly.PointCount);
+                    AddJSONInteger(Props, 'hatch_style', Poly.PolyHatchStyle);
+                    AddJSONBoolean(Props, 'pour_over', Poly.PourOver);
+                    AddJSONBoolean(Props, 'remove_dead_copper', Poly.RemoveDead);
+                    AddJSONBoolean(Props, 'remove_narrow_necks', Poly.RemoveNarrowNecks);
+                    AddJSONNumber(Props, 'neck_threshold_mils', CoordToMils(Poly.NeckWidthThreshold));
+                    AddJSONNumber(Props, 'pour_track_width_mils', CoordToMils(Poly.TrackSize));
+                    AddJSONNumber(Props, 'outline_area_sq_mils', PolygonOutlineAreaSqMils(Poly));
+                    AddJSONNumber(Props, 'bbox_left', CoordToMils(Poly.BoundingRectangle.Left));
+                    AddJSONNumber(Props, 'bbox_bottom', CoordToMils(Poly.BoundingRectangle.Bottom));
+                    AddJSONNumber(Props, 'bbox_right', CoordToMils(Poly.BoundingRectangle.Right));
+                    AddJSONNumber(Props, 'bbox_top', CoordToMils(Poly.BoundingRectangle.Top));
+
+                    for i := 0 to Poly.PointCount - 1 do
+                    begin
+                        VProps := TStringList.Create;
+                        try
+                            AddJSONNumber(VProps, 'x', CoordToMils(Poly.Segments[i].vx));
+                            AddJSONNumber(VProps, 'y', CoordToMils(Poly.Segments[i].vy));
+                            AddJSONInteger(VProps, 'kind', Poly.Segments[i].Kind);
+                            Verts.Add(BuildJSONObject(VProps));
+                        finally
+                            VProps.Free;
+                        end;
+                    end;
+                    Props.Add(Trim(BuildJSONArray(Verts, 'outline')));
+                    Entries.Add(BuildJSONObject(Props));
+                finally
+                    Verts.Free;
+                    Props.Free;
+                end;
+            end;
+            Poly := Iterator.NextPCBObject;
+        end;
+        Board.BoardIterator_Destroy(Iterator);
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONArray(Entries);
+            Result := WriteJSONToFile(OutputLines, ROOT_DIR + '\temp_polygon_data.json');
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        Entries.Free;
+    end;
+end;
+
+// Nth polygon (0-based) belonging to NetName, or nil once N runs past the end.
+// Fetching one at a time keeps the polygon and pad iterators from ever being
+// open together - nested board iterators are not worth the risk here.
+function NthPolygonOnNet(Board: IPCB_Board; NetName: String; N: Integer): IPCB_Primitive;
+var
+    Iterator : IPCB_BoardIterator;
+    Prim     : IPCB_Primitive;
+    Seen     : Integer;
+begin
+    Result := nil;
+    Seen := 0;
+    Iterator := Board.BoardIterator_Create;
+    Iterator.AddFilter_ObjectSet(MkSet(ePolyObject));
+    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_Method(eProcessAll);
+    Prim := Iterator.FirstPCBObject;
+    while (Prim <> nil) do
+    begin
+        if PrimNetName(Prim) = NetName then
+        begin
+            if Seen = N then Result := Prim;
+            Seen := Seen + 1;
+        end;
+        Prim := Iterator.NextPCBObject;
+    end;
+    Board.BoardIterator_Destroy(Iterator);
+end;
+
+// Add every net that owns a polygon, so pour-only nets are not missed. A net
+// like RECT+ can have no tracks and no vias at all and still be a power path.
+procedure AddPolygonNets(Board: IPCB_Board; NetNames: TStringList; Nets: TStringList);
+var
+    Iterator : IPCB_BoardIterator;
+    Prim     : IPCB_Primitive;
+    NetName  : String;
+begin
+    Iterator := Board.BoardIterator_Create;
+    Iterator.AddFilter_ObjectSet(MkSet(ePolyObject));
+    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_Method(eProcessAll);
+    Prim := Iterator.FirstPCBObject;
+    while (Prim <> nil) do
+    begin
+        NetName := PrimNetName(Prim);
+        if (NetName <> '') and NetRequested(NetNames, NetName) then Nets.Add(NetName);
+        Prim := Iterator.NextPCBObject;
+    end;
+    Board.BoardIterator_Destroy(Iterator);
+end;
+
+{..............................................................................}
+{ get_net_geometry_summary - the primary interface.                            }
+{                                                                              }
+{ Answers "is this net wide enough" in one call. Beyond track and via totals   }
+{ it resolves, for every pad on the net sitting in a pour of the same net, the }
+{ polygon-connect rule Altium will actually apply. That matters because a      }
+{ generously poured plane reached through four 8 mil relief spokes carries     }
+{ what the spokes carry, not what the pour could. Distinct rule outcomes are   }
+{ grouped rather than listed per pad so the result stays small.                }
+{..............................................................................}
+function GetNetGeometrySummary(ROOT_DIR: String; NetNames: TStringList): String;
+var
+    Board          : IPCB_Board;
+    Raw, Nets      : TStringList;
+    Iterator       : IPCB_BoardIterator;
+    Poly, Pad      : IPCB_Primitive;
+    Rule           : IPCB_Rule;
+    NetEntries     : TStringList;
+    Props          : TStringList;
+    ConnGroups     : TStringList;
+    ConnEntries    : TStringList;
+    CProps         : TStringList;
+    OutputLines    : TStringList;
+    LayerList      : TStringList;
+    LayerArr       : TStringList;
+    i, n, gi, PolyIdx, Reported : Integer;
+    NetName, Kind, Line, Key, Designator, PadLabel, Examples : String;
+    TrackCount, ArcCount, ViaCount, PolyCount : Integer;
+    MinW, MaxW, TotLen, W                     : Double;
+    NarrowX, NarrowY, PolyArea, MinConductor  : Double;
+    NarrowLayer                               : String;
+    HasRelief                                 : Boolean;
+begin
+    Result := '{"success": false, "error": "No PCB document is currently active - open a .PcbDoc and retry"}';
+    Board := GetBoardSafe(0);
+    if Board = nil then Exit;
+
+    Raw := TStringList.Create;
+    Nets := TStringList.Create;
+    NetEntries := TStringList.Create;
+    try
+        CollectNetGeometry(Board, NetNames, Raw);
+        DistinctNetsFromRaw(Raw, Nets);
+        AddPolygonNets(Board, NetNames, Nets);
+        // An explicitly requested net with no geometry should come back as zeros
+        // rather than vanish - silence is indistinguishable from failure.
+        if NetNames <> nil then
+            for i := 0 to NetNames.Count - 1 do
+                Nets.Add(NetNames[i]);
+
+        for n := 0 to Nets.Count - 1 do
+        begin
+            NetName := Nets[n];
+            TrackCount := 0;
+            ArcCount := 0;
+            ViaCount := 0;
+            PolyCount := 0;
+            MinW := 0;
+            MaxW := 0;
+            TotLen := 0;
+            NarrowX := 0;
+            NarrowY := 0;
+            NarrowLayer := '';
+            PolyArea := 0;
+            MinConductor := 0;
+            HasRelief := False;
+
+            for i := 0 to Raw.Count - 1 do
+            begin
+                Line := Raw[i];
+                if GetFieldFromPipeString(Line, 1) = NetName then
+                begin
+                    Kind := GetFieldFromPipeString(Line, 0);
+                    if Kind = 'VIA' then
+                        ViaCount := ViaCount + 1
+                    else
+                    begin
+                        W := SafeStrToFloat(GetFieldFromPipeString(Line, 3));
+                        TotLen := TotLen + SafeStrToFloat(GetFieldFromPipeString(Line, 4));
+                        if Kind = 'TRACK' then
+                            TrackCount := TrackCount + 1
+                        else
+                            ArcCount := ArcCount + 1;
+                        if (MinW = 0) or (W < MinW) then
+                        begin
+                            MinW := W;
+                            NarrowLayer := GetFieldFromPipeString(Line, 2);
+                            if Kind = 'TRACK' then
+                            begin
+                                NarrowX := (SafeStrToFloat(GetFieldFromPipeString(Line, 5)) +
+                                            SafeStrToFloat(GetFieldFromPipeString(Line, 7))) / 2;
+                                NarrowY := (SafeStrToFloat(GetFieldFromPipeString(Line, 6)) +
+                                            SafeStrToFloat(GetFieldFromPipeString(Line, 8))) / 2;
+                            end
+                            else
+                            begin
+                                NarrowX := SafeStrToFloat(GetFieldFromPipeString(Line, 5));
+                                NarrowY := SafeStrToFloat(GetFieldFromPipeString(Line, 6));
+                            end;
+                        end;
+                        if W > MaxW then MaxW := W;
+                    end;
+                end;
+            end;
+
+            LayerList := TStringList.Create;
+            ConnGroups := TStringList.Create;
+            ConnEntries := TStringList.Create;
+            try
+                LayerList.Duplicates := dupIgnore;
+                LayerList.Sorted := True;
+
+                PolyIdx := 0;
+                Poly := NthPolygonOnNet(Board, NetName, PolyIdx);
+                while (Poly <> nil) do
+                begin
+                    PolyCount := PolyCount + 1;
+                    LayerList.Add(Board.LayerName(Poly.Layer));
+                    PolyArea := PolyArea + PolygonOutlineAreaSqMils(Poly);
+
+                    // How each pad on this net actually enters this pour.
+                    Iterator := Board.BoardIterator_Create;
+                    Iterator.AddFilter_ObjectSet(MkSet(ePadObject));
+                    Iterator.AddFilter_LayerSet(AllLayers);
+                    Iterator.AddFilter_Method(eProcessAll);
+                    Pad := Iterator.FirstPCBObject;
+                    while (Pad <> nil) do
+                    begin
+                        if PrimNetName(Pad) = NetName then
+                        begin
+                            Rule := Board.FindDominantRuleForObjectPair(Pad, Poly,
+                                                                        eRule_PolygonConnectStyle);
+                            if Rule <> nil then
+                            begin
+                                if Rule.ConnectStyle = 0 then
+                                begin
+                                    HasRelief := True;
+                                    if (MinConductor = 0) or
+                                       (CoordToMils(Rule.ReliefConductorWidth) < MinConductor) then
+                                        MinConductor := CoordToMils(Rule.ReliefConductorWidth);
+                                end;
+
+                                Designator := '?';
+                                if Pad.Component <> nil then Designator := Pad.Component.Name.Text;
+                                PadLabel := Designator + '.' + Pad.Name;
+
+                                Key := Rule.Name + '|' + IntToStr(Rule.ConnectStyle) + '|' +
+                                       IntToStr(Rule.ReliefEntries) + '|' +
+                                       FloatToStr(CoordToMils(Rule.ReliefConductorWidth)) + '|' +
+                                       Rule.Scope1Expression + '|' + Rule.Scope2Expression;
+                                gi := ConnGroups.IndexOfName(Key);
+                                if gi < 0 then
+                                    ConnGroups.Add(Key + '=1;' + PadLabel)
+                                else
+                                begin
+                                    Line := ConnGroups.ValueFromIndex[gi];
+                                    Reported := StrToInt(Copy(Line, 1, Pos(';', Line) - 1));
+                                    Examples := Copy(Line, Pos(';', Line) + 1, Length(Line));
+                                    // Keep a handful of example pads, not all of them.
+                                    if Reported < 5 then Examples := Examples + ' ' + PadLabel;
+                                    ConnGroups[gi] := Key + '=' + IntToStr(Reported + 1) + ';' + Examples;
+                                end;
+                            end;
+                        end;
+                        Pad := Iterator.NextPCBObject;
+                    end;
+                    Board.BoardIterator_Destroy(Iterator);
+
+                    PolyIdx := PolyIdx + 1;
+                    Poly := NthPolygonOnNet(Board, NetName, PolyIdx);
+                end;
+
+                for gi := 0 to ConnGroups.Count - 1 do
+                begin
+                    Key := ConnGroups.Names[gi];
+                    Line := ConnGroups.ValueFromIndex[gi];
+                    CProps := TStringList.Create;
+                    try
+                        AddJSONProperty(CProps, 'rule', GetFieldFromPipeString(Key, 0));
+                        AddJSONProperty(CProps, 'connect_style',
+                                        ConnectStyleName(StrToInt(GetFieldFromPipeString(Key, 1))));
+                        AddJSONInteger(CProps, 'relief_entries', StrToInt(GetFieldFromPipeString(Key, 2)));
+                        AddJSONNumber(CProps, 'relief_conductor_mils',
+                                      SafeStrToFloat(GetFieldFromPipeString(Key, 3)));
+                        AddJSONProperty(CProps, 'rule_scope1', GetFieldFromPipeString(Key, 4));
+                        AddJSONProperty(CProps, 'rule_scope2', GetFieldFromPipeString(Key, 5));
+                        AddJSONInteger(CProps, 'pad_count', StrToInt(Copy(Line, 1, Pos(';', Line) - 1)));
+                        AddJSONProperty(CProps, 'example_pads',
+                                        Trim(Copy(Line, Pos(';', Line) + 1, Length(Line))));
+                        ConnEntries.Add(BuildJSONObject(CProps));
+                    finally
+                        CProps.Free;
+                    end;
+                end;
+
+                Props := TStringList.Create;
+                try
+                    AddJSONProperty(Props, 'net', NetName);
+                    AddJSONInteger(Props, 'track_count', TrackCount);
+                    AddJSONInteger(Props, 'arc_count', ArcCount);
+                    AddJSONInteger(Props, 'via_count', ViaCount);
+                    AddJSONInteger(Props, 'polygon_count', PolyCount);
+                    AddJSONNumber(Props, 'min_track_width_mils', MinW);
+                    AddJSONNumber(Props, 'max_track_width_mils', MaxW);
+                    AddJSONNumber(Props, 'total_track_length_mils', TotLen);
+                    AddJSONProperty(Props, 'narrowest_layer', NarrowLayer);
+                    AddJSONNumber(Props, 'narrowest_x', NarrowX);
+                    AddJSONNumber(Props, 'narrowest_y', NarrowY);
+                    LayerArr := TStringList.Create;
+                    try
+                        for i := 0 to LayerList.Count - 1 do
+                            LayerArr.Add('"' + JSONEscapeString(LayerList[i]) + '"');
+                        Props.Add(Trim(BuildJSONArray(LayerArr, 'polygon_layers')));
+                    finally
+                        LayerArr.Free;
+                    end;
+                    AddJSONNumber(Props, 'polygon_outline_area_sq_mils', PolyArea);
+                    AddJSONBoolean(Props, 'has_relief_connections', HasRelief);
+                    AddJSONNumber(Props, 'min_relief_conductor_mils', MinConductor);
+                    Props.Add(Trim(BuildJSONArray(ConnEntries, 'pad_connections')));
+                    NetEntries.Add(BuildJSONObject(Props));
+                finally
+                    Props.Free;
+                end;
+            finally
+                ConnEntries.Free;
+                ConnGroups.Free;
+                LayerList.Free;
+            end;
+        end;
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONArray(NetEntries);
+            Result := WriteJSONToFile(OutputLines, ROOT_DIR + '\temp_net_geometry_summary.json');
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        NetEntries.Free;
+        Nets.Free;
+        Raw.Free;
+    end;
+end;
