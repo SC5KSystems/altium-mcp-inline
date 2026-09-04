@@ -16,3 +16,19 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Altium design files. Test boards live outside the repo; nothing carrying
+# real design geometry should ever land in a public fork.
+*.PcbDoc
+*.SchDoc
+*.PrjPcb
+*.PrjPcbStructure
+*.PcbLib
+*.SchLib
+*.IntLib
+*.DbLib
+*.SVNDbLib
+*.OutJob
+*.Harness
+Project Outputs*/
+Project Logs*/
