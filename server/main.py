@@ -2403,6 +2403,81 @@ async def get_pcb_rules(ctx: Context) -> str:
     return json.dumps(rules_data, indent=2)
 
 @mcp.tool()
+async def get_net_classes(ctx: Context) -> str:
+    """
+    Get the net classes defined on the current PCB and which nets belong to each.
+
+    Rule scope expressions routinely reference classes - InNetClass('Power') and
+    similar - so this is what tells you whether a scoped rule can actually reach
+    a given net. A rule scoped to a class that does not exist, or that does not
+    contain the net in question, silently loses to a lower-priority default rule
+    and nothing in the rule listing itself reveals that. Pair this with
+    get_pcb_rules_parsed when a net is behaving as though a rule is not applying.
+
+    Returns:
+        str: JSON array of classes, each with name, is_super_class, member_count
+             and the list of member nets.
+    """
+    logger.info("Getting net classes")
+
+    response = await altium_bridge.execute_command("get_net_classes", {})
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error getting net classes: {error_msg}")
+        return json.dumps({"error": f"Failed to get net classes: {error_msg}"})
+
+    classes = response.get("result", [])
+    if not classes:
+        return json.dumps({"message": "No net classes defined in the current PCB document"})
+
+    logger.info(f"Retrieved {len(classes)} net class(es)")
+    return json.dumps(classes, indent=2)
+
+
+@mcp.tool()
+async def get_pcb_rules_parsed(ctx: Context) -> str:
+    """
+    Get PCB design rules with their numeric constraints as real fields.
+
+    get_pcb_rules returns descriptor strings like "(Min=0.203mm)" that have to be
+    regex'd apart. This returns the values typed and in mils, alongside the
+    priority and scope expressions that decide whether a rule applies at all.
+
+    Every rule reports name, rule_kind, rule_kind_name, priority, scope1, scope2
+    and descriptor. Priority is lowest-wins: priority 1 beats priority 2. Typed
+    constraints are broken out for the kinds that govern copper:
+
+      Width Constraint          min/max/preferred_width_mils
+      Clearance Constraint      clearance_gap_mils
+      Polygon Connect Style     connect_style, relief_entries,
+                                relief_conductor_mils, relief_air_gap_mils
+      Power Plane Connect Style relief_entries, relief_conductor_mils
+
+    Other kinds carry the descriptor only. Width constraints can differ per
+    layer; the reported values are the top-layer ones.
+
+    Returns:
+        str: JSON array of rules.
+    """
+    logger.info("Getting parsed PCB design rules")
+
+    response = await altium_bridge.execute_command("get_pcb_rules_parsed", {})
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error getting parsed PCB rules: {error_msg}")
+        return json.dumps({"error": f"Failed to get parsed PCB rules: {error_msg}"})
+
+    rules = response.get("result", [])
+    if not rules:
+        return json.dumps({"message": "No design rules found in the current PCB document"})
+
+    logger.info(f"Retrieved {len(rules)} parsed rule(s)")
+    return json.dumps(rules, indent=2)
+
+
+@mcp.tool()
 async def get_net_geometry_summary(ctx: Context, net_names: list = None) -> str:
     """
     Answer "is this net wide enough" for one or more nets, in a single call.

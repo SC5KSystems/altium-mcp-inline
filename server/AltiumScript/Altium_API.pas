@@ -1196,6 +1196,10 @@ begin
             Result := ExecuteGetVias(RequestData);
         'get_net_geometry_summary':
             Result := ExecuteGetNetGeometrySummary(RequestData);
+        'get_net_classes':
+            Result := GetNetClasses(ROOT_DIR);
+        'get_pcb_rules_parsed':
+            Result := GetPCBRulesParsed(ROOT_DIR);
         'get_output_job_containers':
             Result := ExecuteGetOutputJobContainers(RequestData);
         'run_output_jobs':

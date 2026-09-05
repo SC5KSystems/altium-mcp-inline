@@ -3386,3 +3386,211 @@ begin
         Raw.Free;
     end;
 end;
+
+{..............................................................................}
+{ Phase 2: net classes and parsed rules.                                       }
+{                                                                              }
+{ Rule scope expressions routinely reference net classes - InNetClass('Power') }
+{ and the like - so a rule listing on its own cannot tell you whether a rule   }
+{ actually reaches a given net. A scoped rule whose class does not exist, or   }
+{ does not contain the net, silently loses to a lower-priority default. Both   }
+{ halves are needed to see that.                                               }
+{..............................................................................}
+
+{..............................................................................}
+{ get_net_classes - class names and their member nets.                         }
+{                                                                              }
+{ Membership is resolved by asking each class about each net rather than by    }
+{ enumerating members directly, which is the interface Altium reliably         }
+{ exposes here.                                                                }
+{..............................................................................}
+function GetNetClasses(ROOT_DIR: String): String;
+var
+    Board        : IPCB_Board;
+    ClassIter    : IPCB_BoardIterator;
+    NetIter      : IPCB_BoardIterator;
+    NetClass     : IPCB_ObjectClass;
+    Net          : IPCB_Net;
+    Entries      : TStringList;
+    Props        : TStringList;
+    Members      : TStringList;
+    ClassNames   : TStringList;
+    OutputLines  : TStringList;
+    i            : Integer;
+begin
+    Result := '{"success": false, "error": "No PCB document is currently active - open a .PcbDoc and retry"}';
+    Board := GetBoardSafe(0);
+    if Board = nil then Exit;
+
+    Entries := TStringList.Create;
+    ClassNames := TStringList.Create;
+    try
+        // Collect the class names first so the net iterator is never open at
+        // the same time as the class iterator.
+        ClassIter := Board.BoardIterator_Create;
+        ClassIter.SetState_FilterAll;
+        ClassIter.AddFilter_ObjectSet(MkSet(eClassObject));
+        NetClass := ClassIter.FirstPCBObject;
+        while (NetClass <> nil) do
+        begin
+            if NetClass.MemberKind = eClassMemberKind_Net then
+                ClassNames.Add(NetClass.Name);
+            NetClass := ClassIter.NextPCBObject;
+        end;
+        Board.BoardIterator_Destroy(ClassIter);
+
+        for i := 0 to ClassNames.Count - 1 do
+        begin
+            // Re-find the class by name, then walk the nets against it.
+            ClassIter := Board.BoardIterator_Create;
+            ClassIter.SetState_FilterAll;
+            ClassIter.AddFilter_ObjectSet(MkSet(eClassObject));
+            NetClass := ClassIter.FirstPCBObject;
+            while (NetClass <> nil) do
+            begin
+                if (NetClass.MemberKind = eClassMemberKind_Net) and
+                   (NetClass.Name = ClassNames[i]) then Break;
+                NetClass := ClassIter.NextPCBObject;
+            end;
+            Board.BoardIterator_Destroy(ClassIter);
+            if NetClass = nil then Continue;
+
+            Props := TStringList.Create;
+            Members := TStringList.Create;
+            try
+                AddJSONProperty(Props, 'name', NetClass.Name);
+                AddJSONBoolean(Props, 'is_super_class', NetClass.SuperClass);
+
+                NetIter := Board.BoardIterator_Create;
+                NetIter.AddFilter_ObjectSet(MkSet(eNetObject));
+                NetIter.AddFilter_LayerSet(AllLayers);
+                NetIter.AddFilter_Method(eProcessAll);
+                Net := NetIter.FirstPCBObject;
+                while (Net <> nil) do
+                begin
+                    if NetClass.IsMember(Net) then
+                        Members.Add('"' + JSONEscapeString(Net.Name) + '"');
+                    Net := NetIter.NextPCBObject;
+                end;
+                Board.BoardIterator_Destroy(NetIter);
+
+                AddJSONInteger(Props, 'member_count', Members.Count);
+                Props.Add(Trim(BuildJSONArray(Members, 'nets')));
+                Entries.Add(BuildJSONObject(Props));
+            finally
+                Members.Free;
+                Props.Free;
+            end;
+        end;
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONArray(Entries);
+            Result := WriteJSONToFile(OutputLines, ROOT_DIR + '\temp_net_classes.json');
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        ClassNames.Free;
+        Entries.Free;
+    end;
+end;
+
+{..............................................................................}
+{ get_pcb_rules_parsed - rules with numeric constraints as real fields.        }
+{                                                                              }
+{ get_pcb_rules returns descriptor strings like "(Min=0.203mm)" that have to   }
+{ be regex'd apart. This returns the values typed, in mils, alongside the      }
+{ priority and scope expressions that decide whether a rule applies at all.    }
+{                                                                              }
+{ Typed extraction covers the kinds that govern copper: width, clearance,      }
+{ polygon connect and plane connect. Every rule still carries its descriptor,  }
+{ so nothing is lost for the kinds not broken out. Rule-kind numbers are used  }
+{ directly rather than named constants because only eRule_PolygonConnectStyle  }
+{ is confirmed to exist in this Altium build, and an unknown identifier is a   }
+{ compile error that leaves the script executor wedged.                        }
+{..............................................................................}
+function GetPCBRulesParsed(ROOT_DIR: String): String;
+var
+    Board       : IPCB_Board;
+    Iterator    : IPCB_BoardIterator;
+    Rule        : IPCB_Rule;
+    Entries     : TStringList;
+    Props       : TStringList;
+    OutputLines : TStringList;
+    Kind        : Integer;
+begin
+    Result := '{"success": false, "error": "No PCB document is currently active - open a .PcbDoc and retry"}';
+    Board := GetBoardSafe(0);
+    if Board = nil then Exit;
+
+    Entries := TStringList.Create;
+    try
+        Iterator := Board.BoardIterator_Create;
+        Iterator.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+        Rule := Iterator.FirstPCBObject;
+        while (Rule <> nil) do
+        begin
+            Kind := Rule.RuleKind;
+            Props := TStringList.Create;
+            try
+                AddJSONProperty(Props, 'name', Rule.Name);
+                AddJSONInteger(Props, 'rule_kind', Kind);
+                AddJSONProperty(Props, 'rule_kind_name', Rule.GetState_ShortDescriptorString);
+                // Lower number wins: priority 1 beats priority 2.
+                AddJSONInteger(Props, 'priority', Rule.Priority);
+                AddJSONProperty(Props, 'scope1', Rule.Scope1Expression);
+                AddJSONProperty(Props, 'scope2', Rule.Scope2Expression);
+                AddJSONProperty(Props, 'descriptor', Rule.Descriptor);
+
+                if Kind = 2 then
+                begin
+                    // Width Constraint. Widths are indexed per layer; these are
+                    // the top-layer values, which is what a uniform rule reports
+                    // on every layer anyway.
+                    AddJSONNumber(Props, 'min_width_mils', CoordToMils(Rule.MinWidth[eTopLayer]));
+                    AddJSONNumber(Props, 'max_width_mils', CoordToMils(Rule.MaxWidth[eTopLayer]));
+                    AddJSONNumber(Props, 'preferred_width_mils', CoordToMils(Rule.FavoredWidth[eTopLayer]));
+                end
+                else if Kind = 0 then
+                begin
+                    // Clearance Constraint.
+                    AddJSONNumber(Props, 'clearance_gap_mils', CoordToMils(Rule.Gap));
+                end
+                else if Kind = 20 then
+                begin
+                    // Polygon Connect Style.
+                    AddJSONProperty(Props, 'connect_style', ConnectStyleName(Rule.ConnectStyle));
+                    AddJSONInteger(Props, 'relief_entries', Rule.ReliefEntries);
+                    AddJSONNumber(Props, 'relief_conductor_mils', CoordToMils(Rule.ReliefConductorWidth));
+                    AddJSONNumber(Props, 'relief_air_gap_mils', CoordToMils(Rule.ReliefAirGap));
+                end
+                else if Kind = 6 then
+                begin
+                    // Power Plane Connect Style. This kind does not expose
+                    // ConnectStyle - read the descriptor for the style itself.
+                    AddJSONInteger(Props, 'relief_entries', Rule.ReliefEntries);
+                    AddJSONNumber(Props, 'relief_conductor_mils', CoordToMils(Rule.ReliefConductorWidth));
+                end;
+
+                Entries.Add(BuildJSONObject(Props));
+            finally
+                Props.Free;
+            end;
+            Rule := Iterator.NextPCBObject;
+        end;
+        Board.BoardIterator_Destroy(Iterator);
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONArray(Entries);
+            Result := WriteJSONToFile(OutputLines, ROOT_DIR + '\temp_rules_parsed.json');
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        Entries.Free;
+    end;
+end;
