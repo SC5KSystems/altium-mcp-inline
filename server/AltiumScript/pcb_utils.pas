@@ -3162,12 +3162,13 @@ var
     NetEntries     : TStringList;
     Props          : TStringList;
     ConnGroups     : TStringList;
+    PairList       : TStringList;
     ConnEntries    : TStringList;
     CProps         : TStringList;
     OutputLines    : TStringList;
     LayerList      : TStringList;
     LayerArr       : TStringList;
-    i, n, gi, PolyIdx, Reported : Integer;
+    i, n, gi, PolyIdx, PadCount : Integer;
     NetName, Kind, Line, Key, Designator, PadLabel, Examples : String;
     TrackCount, ArcCount, ViaCount, PolyCount : Integer;
     MinW, MaxW, TotLen, W                     : Double;
@@ -3249,10 +3250,17 @@ begin
 
             LayerList := TStringList.Create;
             ConnGroups := TStringList.Create;
-            ConnEntries := TStringList.Create;
+            PairList := TStringList.Create;
+                ConnEntries := TStringList.Create;
             try
                 LayerList.Duplicates := dupIgnore;
                 LayerList.Sorted := True;
+                // Both must dedupe: ConnGroups collapses to distinct rule
+                // outcomes, PairList to distinct (outcome, pad) pairs.
+                ConnGroups.Duplicates := dupIgnore;
+                ConnGroups.Sorted := True;
+                PairList.Duplicates := dupIgnore;
+                PairList.Sorted := True;
 
                 PolyIdx := 0;
                 Poly := NthPolygonOnNet(Board, NetName, PolyIdx);
@@ -3292,18 +3300,17 @@ begin
                                        IntToStr(Rule.ReliefEntries) + '|' +
                                        FloatToStr(CoordToMils(Rule.ReliefConductorWidth)) + '|' +
                                        Rule.Scope1Expression + '|' + Rule.Scope2Expression;
-                                gi := ConnGroups.IndexOfName(Key);
-                                if gi < 0 then
-                                    ConnGroups.Add(Key + '=1;' + PadLabel)
-                                else
-                                begin
-                                    Line := ConnGroups.ValueFromIndex[gi];
-                                    Reported := StrToInt(Copy(Line, 1, Pos(';', Line) - 1));
-                                    Examples := Copy(Line, Pos(';', Line) + 1, Length(Line));
-                                    // Keep a handful of example pads, not all of them.
-                                    if Reported < 5 then Examples := Examples + ' ' + PadLabel;
-                                    ConnGroups[gi] := Key + '=' + IntToStr(Reported + 1) + ';' + Examples;
-                                end;
+                                // One entry per (rule outcome, pad). A pad meeting
+                                // several polygons of the same net would otherwise be
+                                // counted once per polygon: BATT+ has 34 pads across 6
+                                // pours and was reporting 204.
+                                ConnGroups.Add(Key);
+                                // Pad labels are NOT unique - X3 carries 25 pads all
+                                // named "1" - so the dedupe identity has to include
+                                // position. Deduping on the label alone collapsed
+                                // RECT+ from 26 pads to 2.
+                                PairList.Add(Key + #1 + PadLabel + #2 +
+                                             IntToStr(Pad.x) + ',' + IntToStr(Pad.y));
                             end;
                         end;
                         Pad := Iterator.NextPCBObject;
@@ -3316,8 +3323,22 @@ begin
 
                 for gi := 0 to ConnGroups.Count - 1 do
                 begin
-                    Key := ConnGroups.Names[gi];
-                    Line := ConnGroups.ValueFromIndex[gi];
+                    Key := ConnGroups[gi];
+                    PadCount := 0;
+                    Examples := '';
+                    for i := 0 to PairList.Count - 1 do
+                    begin
+                        if Pos(Key + #1, PairList[i]) = 1 then
+                        begin
+                            PadCount := PadCount + 1;
+                            if PadCount <= 5 then
+                            begin
+                                // Show the readable label, not the dedupe identity.
+                                Line := Copy(PairList[i], Length(Key) + 2, Length(PairList[i]));
+                                Examples := Examples + ' ' + Copy(Line, 1, Pos(#2, Line) - 1);
+                            end;
+                        end;
+                    end;
                     CProps := TStringList.Create;
                     try
                         AddJSONProperty(CProps, 'rule', GetFieldFromPipeString(Key, 0));
@@ -3328,9 +3349,8 @@ begin
                                       SafeStrToFloat(GetFieldFromPipeString(Key, 3)));
                         AddJSONProperty(CProps, 'rule_scope1', GetFieldFromPipeString(Key, 4));
                         AddJSONProperty(CProps, 'rule_scope2', GetFieldFromPipeString(Key, 5));
-                        AddJSONInteger(CProps, 'pad_count', StrToInt(Copy(Line, 1, Pos(';', Line) - 1)));
-                        AddJSONProperty(CProps, 'example_pads',
-                                        Trim(Copy(Line, Pos(';', Line) + 1, Length(Line))));
+                        AddJSONInteger(CProps, 'pad_count', PadCount);
+                        AddJSONProperty(CProps, 'example_pads', Trim(Examples));
                         ConnEntries.Add(BuildJSONObject(CProps));
                     finally
                         CProps.Free;
@@ -3368,6 +3388,7 @@ begin
                 end;
             finally
                 ConnEntries.Free;
+                PairList.Free;
                 ConnGroups.Free;
                 LayerList.Free;
             end;
