@@ -1011,32 +1011,84 @@ begin
     end;
 end;
 
-// Pull a "net_names": [...] array out of the request. An absent or empty array
-// means "every net", which the geometry functions treat as no filter.
-procedure ParseNetNamesRequest(RequestData: TStringList; NetNames: TStringList);
+// Pull a JSON string array out of the request, whichever way it is laid out.
+//
+// json.dump renders an empty array inline - "key": [] - and a populated one
+// across several lines. An earlier version only handled the multi-line form and
+// walked off the end of an inline [], swallowing the following lines as if they
+// were array items. That turned "no filter" into a filter matching nothing, so
+// the default call of every filtered tool silently returned empty.
+//
+// Collect the raw text between the brackets first, spanning lines only when it
+// has to, then split it. No Break, so the scan reads the same in both shapes.
+procedure ParseJSONStringArray(RequestData: TStringList; Key: String; OutList: TStringList);
 var
-    i          : Integer;
-    ParamValue : String;
+    i, p       : Integer;
+    Raw, Item  : String;
+    Collecting : Boolean;
+    Done       : Boolean;
 begin
-    // Net names are matched case-insensitively; Altium does not distinguish.
-    NetNames.CaseSensitive := False;
-    for i := 0 to RequestData.Count - 1 do
+    Raw := '';
+    Collecting := False;
+    Done := False;
+    i := 0;
+    while (i < RequestData.Count) and (not Done) do
     begin
-        if (Pos('"net_names"', RequestData[i]) > 0) then
+        if (not Collecting) and (Pos('"' + Key + '"', RequestData[i]) > 0) then
         begin
-            i := i + 1;
-            while (i < RequestData.Count) and (Pos(']', RequestData[i]) = 0) do
+            p := Pos('[', RequestData[i]);
+            if p > 0 then
             begin
-                ParamValue := RequestData[i];
-                ParamValue := StringReplace(ParamValue, '"', '', REPLACEALL);
-                ParamValue := StringReplace(ParamValue, ',', '', REPLACEALL);
-                ParamValue := Trim(ParamValue);
-                if (ParamValue <> '') and (ParamValue <> '[') then
-                    NetNames.Add(ParamValue);
-                i := i + 1;
+                Raw := Copy(RequestData[i], p + 1, Length(RequestData[i]) - p);
+                if Pos(']', Raw) > 0 then
+                begin
+                    // Whole array on this line, including the empty case.
+                    Raw := Copy(Raw, 1, Pos(']', Raw) - 1);
+                    Done := True;
+                end
+                else
+                    Collecting := True;
             end;
+        end
+        else if Collecting then
+        begin
+            if Pos(']', RequestData[i]) > 0 then
+            begin
+                Raw := Raw + ',' + Copy(RequestData[i], 1, Pos(']', RequestData[i]) - 1);
+                Collecting := False;
+                Done := True;
+            end
+            else
+                Raw := Raw + ',' + RequestData[i];
         end;
+        i := i + 1;
     end;
+
+    while Raw <> '' do
+    begin
+        p := Pos(',', Raw);
+        if p > 0 then
+        begin
+            Item := Copy(Raw, 1, p - 1);
+            Raw := Copy(Raw, p + 1, Length(Raw) - p);
+        end
+        else
+        begin
+            Item := Raw;
+            Raw := '';
+        end;
+        Item := StringReplace(Item, '"', '', REPLACEALL);
+        Item := Trim(Item);
+        if Item <> '' then OutList.Add(Item);
+    end;
+end;
+
+// Net names are matched case-insensitively; Altium does not distinguish.
+// An absent or empty array means "every net".
+procedure ParseNetNamesRequest(RequestData: TStringList; NetNames: TStringList);
+begin
+    NetNames.CaseSensitive := False;
+    ParseJSONStringArray(RequestData, 'net_names', NetNames);
 end;
 
 function ExecuteGetTrackData(RequestData: TStringList): String;
@@ -1116,8 +1168,9 @@ begin
     RuleNames := TStringList.Create;
     try
         RuleNames.CaseSensitive := False;
-        MaxViolations := 200;
+        ParseJSONStringArray(RequestData, 'rule_names', RuleNames);
 
+        MaxViolations := 200;
         for i := 0 to RequestData.Count - 1 do
         begin
             if (Pos('"max_violations"', RequestData[i]) > 0) then
@@ -1126,19 +1179,6 @@ begin
                 ParamValue := Copy(RequestData[i], ValueStart, Length(RequestData[i]) - ValueStart + 1);
                 ParamValue := TrimJSON(ParamValue);
                 if ParamValue <> '' then MaxViolations := StrToInt(ParamValue);
-            end
-            else if (Pos('"rule_names"', RequestData[i]) > 0) then
-            begin
-                i := i + 1;
-                while (i < RequestData.Count) and (Pos(']', RequestData[i]) = 0) do
-                begin
-                    ParamValue := RequestData[i];
-                    ParamValue := StringReplace(ParamValue, '"', '', REPLACEALL);
-                    ParamValue := StringReplace(ParamValue, ',', '', REPLACEALL);
-                    ParamValue := Trim(ParamValue);
-                    if (ParamValue <> '') and (ParamValue <> '[') then RuleNames.Add(ParamValue);
-                    i := i + 1;
-                end;
             end;
         end;
 
