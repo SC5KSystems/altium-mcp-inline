@@ -4134,3 +4134,397 @@ begin
         Props.Free;
     end;
 end;
+
+{..............................................................................}
+{ Rule and class edits. The write surface was previously half-built: rules and }
+{ classes could be created but not removed or amended, which forced every      }
+{ correction through the Altium UI.                                            }
+{                                                                              }
+{ Editing a rule in place matters more than it looks. Adding a rule renumbers  }
+{ priorities within its kind, so "create a rule with the right value" silently }
+{ outranks the rule it was meant to adjust. Amending the existing one does not.}
+{..............................................................................}
+
+// Net object by name, or nil.
+function FindNetByName(Board: IPCB_Board; NetName: String): IPCB_Net;
+var
+    Iterator : IPCB_BoardIterator;
+    Net      : IPCB_Net;
+begin
+    Result := nil;
+    Iterator := Board.BoardIterator_Create;
+    Iterator.AddFilter_ObjectSet(MkSet(eNetObject));
+    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_Method(eProcessAll);
+    Net := Iterator.FirstPCBObject;
+    while (Net <> nil) do
+    begin
+        if Net.Name = NetName then Result := Net;
+        Net := Iterator.NextPCBObject;
+    end;
+    Board.BoardIterator_Destroy(Iterator);
+end;
+
+// Net class by name, or nil. Member kind 0 is the net class.
+function FindNetClassByName(Board: IPCB_Board; ClassName: String): IPCB_ObjectClass;
+var
+    Iterator : IPCB_BoardIterator;
+    Cls      : IPCB_ObjectClass;
+    Kind     : Integer;
+begin
+    Result := nil;
+    Iterator := Board.BoardIterator_Create;
+    Iterator.SetState_FilterAll;
+    Iterator.AddFilter_ObjectSet(MkSet(eClassObject));
+    Cls := Iterator.FirstPCBObject;
+    while (Cls <> nil) do
+    begin
+        Kind := Cls.MemberKind;
+        if (Kind = 0) and (Cls.Name = ClassName) then Result := Cls;
+        Cls := Iterator.NextPCBObject;
+    end;
+    Board.BoardIterator_Destroy(Iterator);
+end;
+
+// Current members of a net class, by asking the class about every net.
+procedure CollectClassMembers(Board: IPCB_Board; Cls: IPCB_ObjectClass; Members: TStringList);
+var
+    Iterator : IPCB_BoardIterator;
+    Net      : IPCB_Net;
+begin
+    Iterator := Board.BoardIterator_Create;
+    Iterator.AddFilter_ObjectSet(MkSet(eNetObject));
+    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_Method(eProcessAll);
+    Net := Iterator.FirstPCBObject;
+    while (Net <> nil) do
+    begin
+        if Cls.IsMember(Net) then Members.Add(Net.Name);
+        Net := Iterator.NextPCBObject;
+    end;
+    Board.BoardIterator_Destroy(Iterator);
+end;
+
+{..............................................................................}
+{ delete_rule - remove a rule by name.                                         }
+{..............................................................................}
+function DeleteRule(ROOT_DIR: String; RuleName: String): String;
+var
+    Board       : IPCB_Board;
+    Rule        : IPCB_Rule;
+    Props       : TStringList;
+    OutputLines : TStringList;
+    Descriptor  : String;
+    KindName    : String;
+begin
+    Props := TStringList.Create;
+    try
+        Board := GetBoardSafe(0);
+        if Board = nil then
+        begin
+            AddJSONBoolean(Props, 'success', False);
+            AddJSONProperty(Props, 'error',
+                'No PCB document is currently active - open a .PcbDoc and retry');
+        end
+        else
+        begin
+            Rule := FindRuleByName(Board, RuleName);
+            if Rule = nil then
+            begin
+                AddJSONBoolean(Props, 'success', False);
+                AddJSONProperty(Props, 'error',
+                    'No rule named "' + RuleName + '" on this board - ' +
+                    'use get_pcb_rules_parsed to list the rule names');
+            end
+            else
+            begin
+                // Capture what is about to be lost: deleting a rule is not
+                // undoable from here, and the descriptor is enough to rebuild it.
+                Descriptor := Rule.Descriptor;
+                KindName := Rule.GetState_ShortDescriptorString;
+
+                PCBServer.PreProcess;
+                Board.RemovePCBObject(Rule);
+                PCBServer.PostProcess;
+
+                AddJSONBoolean(Props, 'success', True);
+                AddJSONProperty(Props, 'deleted', RuleName);
+                AddJSONProperty(Props, 'rule_kind_name', KindName);
+                AddJSONProperty(Props, 'deleted_descriptor', Descriptor);
+                // Verify rather than assume.
+                AddJSONBoolean(Props, 'confirmed_gone', FindRuleByName(Board, RuleName) = nil);
+                AddJSONProperty(Props, 'note',
+                    'Removing a rule renumbers priorities within its kind. Undoable in ' +
+                    'Altium; not written to disk until the board is saved.');
+            end;
+        end;
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONObject(Props);
+            Result := WriteJSONToFile(OutputLines, ROOT_DIR + '\temp_delete_rule.json');
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        Props.Free;
+    end;
+end;
+
+{..............................................................................}
+{ modify_net_class - add and/or remove nets from an existing class.            }
+{                                                                              }
+{ Membership is confirmed by asking the class afterwards rather than trusting  }
+{ return values: AddMemberByName reports False even when it succeeds, which is }
+{ why upstream's create_net_class claims "nets_added: 0" on a working add.     }
+{..............................................................................}
+function ModifyNetClass(ROOT_DIR: String; ClassName: String;
+                        AddNets, RemoveNets: TStringList): String;
+var
+    Board       : IPCB_Board;
+    Cls         : IPCB_ObjectClass;
+    Net         : IPCB_Net;
+    Props       : TStringList;
+    Before      : TStringList;
+    After       : TStringList;
+    AfterJSON   : TStringList;
+    NotFound    : TStringList;
+    OutputLines : TStringList;
+    i           : Integer;
+begin
+    Props := TStringList.Create;
+    Before := TStringList.Create;
+    After := TStringList.Create;
+    AfterJSON := TStringList.Create;
+    NotFound := TStringList.Create;
+    try
+        Board := GetBoardSafe(0);
+        if Board = nil then
+        begin
+            AddJSONBoolean(Props, 'success', False);
+            AddJSONProperty(Props, 'error',
+                'No PCB document is currently active - open a .PcbDoc and retry');
+        end
+        else
+        begin
+            Cls := FindNetClassByName(Board, ClassName);
+            if Cls = nil then
+            begin
+                AddJSONBoolean(Props, 'success', False);
+                AddJSONProperty(Props, 'error',
+                    'No net class named "' + ClassName + '" - use get_object_classes ' +
+                    'to list them, or create_net_class to make one');
+            end
+            else
+            begin
+                CollectClassMembers(Board, Cls, Before);
+
+                PCBServer.PreProcess;
+                if AddNets <> nil then
+                    for i := 0 to AddNets.Count - 1 do
+                    begin
+                        if FindNetByName(Board, AddNets[i]) = nil then
+                            NotFound.Add('"' + JSONEscapeString(AddNets[i]) + '"')
+                        else
+                            Cls.AddMemberByName(AddNets[i]);
+                    end;
+
+                if RemoveNets <> nil then
+                    for i := 0 to RemoveNets.Count - 1 do
+                    begin
+                        Net := FindNetByName(Board, RemoveNets[i]);
+                        if Net = nil then
+                            NotFound.Add('"' + JSONEscapeString(RemoveNets[i]) + '"')
+                        else
+                            Cls.RemoveMember(Net);
+                    end;
+                PCBServer.PostProcess;
+
+                CollectClassMembers(Board, Cls, After);
+                for i := 0 to After.Count - 1 do
+                    AfterJSON.Add('"' + JSONEscapeString(After[i]) + '"');
+
+                AddJSONBoolean(Props, 'success', True);
+                AddJSONProperty(Props, 'class_name', ClassName);
+                AddJSONInteger(Props, 'member_count_before', Before.Count);
+                AddJSONInteger(Props, 'member_count_after', After.Count);
+                Props.Add(Trim(BuildJSONArray(AfterJSON, 'members')));
+                Props.Add(Trim(BuildJSONArray(NotFound, 'nets_not_found')));
+                AddJSONProperty(Props, 'note',
+                    'Membership is read back from the class, not inferred from the ' +
+                    'request. Undoable in Altium; not written to disk until saved.');
+            end;
+        end;
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONObject(Props);
+            Result := WriteJSONToFile(OutputLines, ROOT_DIR + '\temp_modify_net_class.json');
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        NotFound.Free;
+        AfterJSON.Free;
+        After.Free;
+        Before.Free;
+        Props.Free;
+    end;
+end;
+
+{..............................................................................}
+{ set_rule_constraint - amend an existing rule's numbers in place.             }
+{                                                                              }
+{ Only the values supplied are touched; -1 means "leave alone". The rule kind  }
+{ is checked against what was asked for, so a width value aimed at a clearance }
+{ rule is refused rather than silently ignored.                                }
+{                                                                              }
+{ Widths are written across the whole electrical stack, for the same reason    }
+{ create_width_rule does: they are stored per layer and quietly diverge.       }
+{..............................................................................}
+function SetRuleConstraint(ROOT_DIR: String; RuleName: String;
+                           MinMils, PrefMils, MaxMils, GapMils, ConductorMils: Double;
+                           Entries, StyleValue: Integer): String;
+var
+    Board       : IPCB_Board;
+    Rule        : IPCB_Rule;
+    LayerIter   : IPCB_LayerObjectIterator;
+    LayerObj    : IPCB_LayerObject;
+    Props       : TStringList;
+    Changed     : TStringList;
+    OutputLines : TStringList;
+    Kind        : Integer;
+    Before      : String;
+    WantsWidth, WantsGap, WantsConnect : Boolean;
+begin
+    Props := TStringList.Create;
+    Changed := TStringList.Create;
+    try
+        Board := GetBoardSafe(0);
+        Rule := nil;
+        if Board <> nil then Rule := FindRuleByName(Board, RuleName);
+
+        WantsWidth := (MinMils >= 0) or (PrefMils >= 0) or (MaxMils >= 0);
+        WantsGap := (GapMils >= 0);
+        WantsConnect := (ConductorMils >= 0) or (Entries >= 0) or (StyleValue >= 0);
+
+        if Board = nil then
+        begin
+            AddJSONBoolean(Props, 'success', False);
+            AddJSONProperty(Props, 'error',
+                'No PCB document is currently active - open a .PcbDoc and retry');
+        end
+        else if Rule = nil then
+        begin
+            AddJSONBoolean(Props, 'success', False);
+            AddJSONProperty(Props, 'error',
+                'No rule named "' + RuleName + '" on this board - ' +
+                'use get_pcb_rules_parsed to list the rule names');
+        end
+        else if not (WantsWidth or WantsGap or WantsConnect) then
+        begin
+            AddJSONBoolean(Props, 'success', False);
+            AddJSONProperty(Props, 'error', 'No constraint values supplied - nothing to change');
+        end
+        else
+        begin
+            Kind := Rule.RuleKind;
+            Before := Rule.Descriptor;
+
+            if WantsWidth and (Kind <> 2) then
+            begin
+                AddJSONBoolean(Props, 'success', False);
+                AddJSONProperty(Props, 'error',
+                    'Width values were supplied but "' + RuleName + '" is a ' +
+                    Rule.GetState_ShortDescriptorString + ', not a Width Constraint');
+            end
+            else if WantsGap and (Kind <> 0) then
+            begin
+                AddJSONBoolean(Props, 'success', False);
+                AddJSONProperty(Props, 'error',
+                    'A clearance gap was supplied but "' + RuleName + '" is a ' +
+                    Rule.GetState_ShortDescriptorString + ', not a Clearance Constraint');
+            end
+            else if WantsConnect and (Kind <> 20) then
+            begin
+                AddJSONBoolean(Props, 'success', False);
+                AddJSONProperty(Props, 'error',
+                    'Polygon connect values were supplied but "' + RuleName + '" is a ' +
+                    Rule.GetState_ShortDescriptorString + ', not a Polygon Connect Style rule');
+            end
+            else
+            begin
+                PCBServer.PreProcess;
+
+                if WantsWidth then
+                begin
+                    LayerIter := Board.ElectricalLayerIterator;
+                    while LayerIter.Next do
+                    begin
+                        LayerObj := LayerIter.LayerObject;
+                        if MinMils >= 0 then
+                            Rule.MinWidth[LayerObj.LayerID] := MilsToCoord(MinMils);
+                        if MaxMils >= 0 then
+                            Rule.MaxWidth[LayerObj.LayerID] := MilsToCoord(MaxMils);
+                        if PrefMils >= 0 then
+                            Rule.FavoredWidth[LayerObj.LayerID] := MilsToCoord(PrefMils);
+                    end;
+                    if MinMils >= 0 then Changed.Add('"min_width_mils"');
+                    if PrefMils >= 0 then Changed.Add('"preferred_width_mils"');
+                    if MaxMils >= 0 then Changed.Add('"max_width_mils"');
+                end;
+
+                if WantsGap then
+                begin
+                    Rule.Gap := MilsToCoord(GapMils);
+                    Changed.Add('"clearance_gap_mils"');
+                end;
+
+                if WantsConnect then
+                begin
+                    if StyleValue >= 0 then
+                    begin
+                        Rule.ConnectStyle := StyleValue;
+                        Changed.Add('"connect_style"');
+                    end;
+                    if Entries >= 0 then
+                    begin
+                        Rule.ReliefEntries := Entries;
+                        Changed.Add('"relief_entries"');
+                    end;
+                    if ConductorMils >= 0 then
+                    begin
+                        Rule.ReliefConductorWidth := MilsToCoord(ConductorMils);
+                        Changed.Add('"relief_conductor_mils"');
+                    end;
+                end;
+
+                PCBServer.PostProcess;
+
+                AddJSONBoolean(Props, 'success', True);
+                AddJSONProperty(Props, 'name', RuleName);
+                AddJSONProperty(Props, 'rule_kind_name', Rule.GetState_ShortDescriptorString);
+                AddJSONInteger(Props, 'priority', Rule.Priority);
+                AddJSONProperty(Props, 'descriptor_before', Before);
+                // Read back from the rule rather than echoing the request.
+                AddJSONProperty(Props, 'descriptor_after', Rule.Descriptor);
+                AddJSONBoolean(Props, 'changed', Before <> Rule.Descriptor);
+                Props.Add(Trim(BuildJSONArray(Changed, 'fields_written')));
+                AddJSONProperty(Props, 'note',
+                    'Amending in place leaves priority untouched, unlike creating a ' +
+                    'new rule. Undoable in Altium; not written to disk until saved.');
+            end;
+        end;
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONObject(Props);
+            Result := WriteJSONToFile(OutputLines, ROOT_DIR + '\temp_set_rule_constraint.json');
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        Changed.Free;
+        Props.Free;
+    end;
+end;

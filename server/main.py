@@ -2403,6 +2403,135 @@ async def get_pcb_rules(ctx: Context) -> str:
     return json.dumps(rules_data, indent=2)
 
 @mcp.tool()
+async def delete_rule(ctx: Context, rule_name: str) -> str:
+    """
+    Delete a design rule by name. MODIFIES THE DESIGN.
+
+    The counterpart to create_width_rule, which otherwise leaves no way to undo
+    a rule from here. The response echoes the deleted rule's descriptor, which
+    carries enough to recreate it if the deletion was a mistake.
+
+    Removing a rule renumbers priorities within its kind, the same way adding
+    one does. Undoable in Altium; not written to disk until the board is saved.
+
+    Args:
+        rule_name (str): Exact rule name. Use get_pcb_rules_parsed to list them.
+
+    Returns:
+        str: JSON with success, the deleted descriptor and confirmed_gone; or
+             success false if no rule of that name exists.
+    """
+    logger.info(f"Deleting rule {rule_name!r}")
+    response = await altium_bridge.execute_command("delete_rule", {"rule_name": rule_name})
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error deleting rule: {error_msg}")
+        return json.dumps({"error": f"Failed to delete rule: {error_msg}"})
+    return json.dumps(response.get("result", {}), indent=2)
+
+
+@mcp.tool()
+async def modify_net_class(ctx: Context, class_name: str, add_nets: list = None,
+                           remove_nets: list = None) -> str:
+    """
+    Add nets to, or remove nets from, an existing net class. MODIFIES THE DESIGN.
+
+    Net class membership is what decides whether a rule scoped with
+    InNetClass(...) reaches a net at all, so this is often the real fix when a
+    rule appears not to apply. create_net_class can only create or add; this
+    also removes, and reports membership accurately.
+
+    Membership is read back from the class afterwards rather than inferred from
+    the request, because Altium's AddMemberByName returns False even when it
+    succeeds - which is why create_net_class reports "nets_added: 0" on a
+    working add. Trust member_count_after, not the request.
+
+    Nets that do not exist on the board are listed in nets_not_found rather
+    than failing the whole call.
+
+    Args:
+        class_name (str): Existing net class. Use get_object_classes to list
+            them, or create_net_class to make a new one.
+        add_nets (list, optional): Net names to add.
+        remove_nets (list, optional): Net names to remove.
+
+    Returns:
+        str: JSON with success, member_count_before/after, the resulting member
+             list and nets_not_found.
+    """
+    logger.info(f"Modifying net class {class_name!r} add={add_nets} remove={remove_nets}")
+    response = await altium_bridge.execute_command(
+        "modify_net_class",
+        {"class_name": class_name, "add_nets": add_nets or [], "remove_nets": remove_nets or []}
+    )
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error modifying net class: {error_msg}")
+        return json.dumps({"error": f"Failed to modify net class: {error_msg}"})
+    return json.dumps(response.get("result", {}), indent=2)
+
+
+@mcp.tool()
+async def set_rule_constraint(ctx: Context, rule_name: str,
+                              min_width_mils: float = None,
+                              preferred_width_mils: float = None,
+                              max_width_mils: float = None,
+                              clearance_gap_mils: float = None,
+                              connect_style: str = None,
+                              relief_entries: int = None,
+                              relief_conductor_mils: float = None) -> str:
+    """
+    Change an existing rule's constraint values in place. MODIFIES THE DESIGN.
+
+    Prefer this over creating a new rule when you want to adjust a constraint.
+    Adding a rule takes priority 1 and pushes the existing rules of that kind
+    down, so "create a rule with the right value" silently outranks the rule it
+    was meant to correct. Amending in place leaves priority untouched.
+
+    Only the values you supply are written; everything else is left alone. The
+    rule's kind is checked against what you asked for, so a width value aimed at
+    a clearance rule is refused rather than quietly ignored.
+
+    Widths are written across every electrical layer, because Altium stores them
+    per layer and they otherwise diverge silently.
+
+    Supported per rule kind:
+      Width Constraint       min/preferred/max_width_mils
+      Clearance Constraint   clearance_gap_mils
+      Polygon Connect Style  connect_style ("Relief", "Direct", "NoConnect"),
+                             relief_entries, relief_conductor_mils
+
+    Args:
+        rule_name (str): Exact rule name. Use get_pcb_rules_parsed to list them.
+
+    Returns:
+        str: JSON with success, descriptor_before and descriptor_after (read back
+             off the rule), changed, and fields_written.
+    """
+    logger.info(f"Setting constraints on rule {rule_name!r}")
+    params = {"rule_name": rule_name}
+    for key, value in (
+        ("min_width_mils", min_width_mils),
+        ("preferred_width_mils", preferred_width_mils),
+        ("max_width_mils", max_width_mils),
+        ("clearance_gap_mils", clearance_gap_mils),
+        ("connect_style", connect_style),
+        ("relief_entries", relief_entries),
+        ("relief_conductor_mils", relief_conductor_mils),
+    ):
+        # Omit rather than send a sentinel, so "not supplied" is unambiguous.
+        if value is not None:
+            params[key] = value
+
+    response = await altium_bridge.execute_command("set_rule_constraint", params)
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error setting rule constraint: {error_msg}")
+        return json.dumps({"error": f"Failed to set rule constraint: {error_msg}"})
+    return json.dumps(response.get("result", {}), indent=2)
+
+
+@mcp.tool()
 async def create_width_rule(ctx: Context, name: str, min_width_mils: float,
                             preferred_width_mils: float, max_width_mils: float,
                             scope: str = "All") -> str:

@@ -1239,6 +1239,64 @@ begin
     Result := SetRuleEnabled(ROOT_DIR, RuleName, Enabled);
 end;
 
+function ExecuteDeleteRule(RequestData: TStringList): String;
+begin
+    Result := DeleteRule(ROOT_DIR, ExtractScalarParam(RequestData, 'rule_name'));
+end;
+
+function ExecuteModifyNetClass(RequestData: TStringList): String;
+var
+    AddNets, RemoveNets : TStringList;
+begin
+    AddNets := TStringList.Create;
+    RemoveNets := TStringList.Create;
+    try
+        ParseJSONStringArray(RequestData, 'add_nets', AddNets);
+        ParseJSONStringArray(RequestData, 'remove_nets', RemoveNets);
+        Result := ModifyNetClass(ROOT_DIR, ExtractScalarParam(RequestData, 'class_name'),
+                                 AddNets, RemoveNets);
+    finally
+        RemoveNets.Free;
+        AddNets.Free;
+    end;
+end;
+
+// -1 means "not supplied, leave alone" for every optional constraint.
+function OptionalNumParam(RequestData: TStringList; Key: String): Double;
+var
+    S : String;
+begin
+    S := ExtractScalarParam(RequestData, Key);
+    if S = '' then Result := -1 else Result := SafeStrToFloat(S);
+end;
+
+function ExecuteSetRuleConstraint(RequestData: TStringList): String;
+var
+    StyleText   : String;
+    StyleValue  : Integer;
+    EntriesVal  : Integer;
+    EntriesText : String;
+begin
+    StyleText := LowerCase(ExtractScalarParam(RequestData, 'connect_style'));
+    StyleValue := -1;
+    if Pos('relief', StyleText) > 0 then StyleValue := 0;
+    if Pos('direct', StyleText) > 0 then StyleValue := 1;
+    if Pos('noconnect', StyleText) > 0 then StyleValue := 2;
+    if Pos('no connect', StyleText) > 0 then StyleValue := 2;
+
+    EntriesText := ExtractScalarParam(RequestData, 'relief_entries');
+    if EntriesText = '' then EntriesVal := -1 else EntriesVal := StrToInt(EntriesText);
+
+    Result := SetRuleConstraint(ROOT_DIR,
+                                ExtractScalarParam(RequestData, 'rule_name'),
+                                OptionalNumParam(RequestData, 'min_width_mils'),
+                                OptionalNumParam(RequestData, 'preferred_width_mils'),
+                                OptionalNumParam(RequestData, 'max_width_mils'),
+                                OptionalNumParam(RequestData, 'clearance_gap_mils'),
+                                OptionalNumParam(RequestData, 'relief_conductor_mils'),
+                                EntriesVal, StyleValue);
+end;
+
 // Function to execute a command with parameters
 function ExecuteCommand(CommandName: String): String;
 var
@@ -1337,6 +1395,12 @@ begin
             Result := ExecuteCreateWidthRule(RequestData);
         'set_rule_enabled':
             Result := ExecuteSetRuleEnabled(RequestData);
+        'delete_rule':
+            Result := ExecuteDeleteRule(RequestData);
+        'modify_net_class':
+            Result := ExecuteModifyNetClass(RequestData);
+        'set_rule_constraint':
+            Result := ExecuteSetRuleConstraint(RequestData);
         'get_pcb_rules_parsed':
             Result := GetPCBRulesParsed(ROOT_DIR);
         'get_output_job_containers':
