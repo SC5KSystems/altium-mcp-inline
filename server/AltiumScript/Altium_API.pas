@@ -1317,6 +1317,49 @@ begin
     end;
 end;
 
+function ExecuteGetPadData(RequestData: TStringList): String;
+var
+    NetNames, Designators : TStringList;
+    MaxPads : Integer;
+    S       : String;
+begin
+    NetNames := TStringList.Create;
+    Designators := TStringList.Create;
+    try
+        NetNames.CaseSensitive := False;
+        Designators.CaseSensitive := False;
+        ParseJSONStringArray(RequestData, 'net_names', NetNames);
+        ParseJSONStringArray(RequestData, 'designators', Designators);
+        S := ExtractScalarParam(RequestData, 'max_pads');
+        if S = '' then MaxPads := 300 else MaxPads := StrToInt(S);
+        Result := GetPadData(ROOT_DIR, NetNames, Designators, MaxPads);
+    finally
+        Designators.Free;
+        NetNames.Free;
+    end;
+end;
+
+function ExecuteSelectObjectsAt(RequestData: TStringList): String;
+var
+    X, Y, Radius : Double;
+    MaxHits      : Integer;
+    S            : String;
+begin
+    X := 0;
+    Y := 0;
+    Radius := 25;
+    MaxHits := 50;
+    S := ExtractScalarParam(RequestData, 'x');
+    if S <> '' then X := SafeStrToFloat(S);
+    S := ExtractScalarParam(RequestData, 'y');
+    if S <> '' then Y := SafeStrToFloat(S);
+    S := ExtractScalarParam(RequestData, 'radius_mils');
+    if S <> '' then Radius := SafeStrToFloat(S);
+    S := ExtractScalarParam(RequestData, 'max_hits');
+    if S <> '' then MaxHits := StrToInt(S);
+    Result := SelectObjectsAt(ROOT_DIR, X, Y, Radius, MaxHits);
+end;
+
 // Function to execute a command with parameters
 function ExecuteCommand(CommandName: String): String;
 var
@@ -1423,6 +1466,10 @@ begin
             Result := ExecuteSetRuleConstraint(RequestData);
         'get_polygon_pour_primitives':
             Result := ExecuteGetPolygonPourPrimitives(RequestData);
+        'get_pad_data':
+            Result := ExecuteGetPadData(RequestData);
+        'select_objects_at':
+            Result := ExecuteSelectObjectsAt(RequestData);
         'get_pcb_rules_parsed':
             Result := GetPCBRulesParsed(ROOT_DIR);
         'get_output_job_containers':

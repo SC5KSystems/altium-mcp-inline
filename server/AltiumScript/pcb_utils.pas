@@ -4669,3 +4669,228 @@ begin
         Entries.Free;
     end;
 end;
+
+{..............................................................................}
+{ get_pad_data and select_objects_at.                                          }
+{                                                                              }
+{ Pads had no direct query: reaching one meant get_component_pins or raw       }
+{ script, which is awkward when the thing you are chasing is a pad-level       }
+{ problem - the annular ring violations on this board being the example.       }
+{                                                                              }
+{ And every tool here hands back an x,y - a narrowest segment, a violation     }
+{ centre - that then had to be found by hand in Altium. select_objects_at      }
+{ closes that loop.                                                            }
+{..............................................................................}
+
+// True when (X,Y) falls inside Prim's bounding box grown by Radius.
+function PrimNearPoint(Prim: IPCB_Primitive; X, Y, Radius: Double): Boolean;
+var
+    L, R, B, T : Double;
+begin
+    L := CoordToMils(Prim.BoundingRectangle.Left) - Radius;
+    R := CoordToMils(Prim.BoundingRectangle.Right) + Radius;
+    B := CoordToMils(Prim.BoundingRectangle.Bottom) - Radius;
+    T := CoordToMils(Prim.BoundingRectangle.Top) + Radius;
+    Result := (X >= L) and (X <= R) and (Y >= B) and (Y <= T);
+end;
+
+{..............................................................................}
+{ get_pad_data - pads filtered by net and/or component.                        }
+{..............................................................................}
+function GetPadData(ROOT_DIR: String; NetNames, Designators: TStringList;
+                    MaxPads: Integer): String;
+var
+    Board       : IPCB_Board;
+    Iterator    : IPCB_BoardIterator;
+    Pad         : IPCB_Primitive;
+    Entries     : TStringList;
+    Props       : TStringList;
+    OutputLines : TStringList;
+    Summary     : TStringList;
+    NetName, Designator : String;
+    Total, Kept : Integer;
+    Wanted      : Boolean;
+begin
+    Result := '{"success": false, "error": "No PCB document is currently active - open a .PcbDoc and retry"}';
+    Board := GetBoardSafe(0);
+    if Board = nil then Exit;
+
+    if MaxPads <= 0 then MaxPads := 300;
+
+    Entries := TStringList.Create;
+    Summary := TStringList.Create;
+    try
+        Total := 0;
+        Kept := 0;
+
+        Iterator := Board.BoardIterator_Create;
+        Iterator.AddFilter_ObjectSet(MkSet(ePadObject));
+        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+        Pad := Iterator.FirstPCBObject;
+        while (Pad <> nil) do
+        begin
+            NetName := PrimNetName(Pad);
+            Designator := '';
+            if Pad.Component <> nil then Designator := Pad.Component.Name.Text;
+
+            // Both filters are optional; an empty list means "no filter".
+            Wanted := True;
+            if NetNames <> nil then
+                if NetNames.Count > 0 then
+                    if NetNames.IndexOf(NetName) < 0 then Wanted := False;
+            if Designators <> nil then
+                if Designators.Count > 0 then
+                    if Designators.IndexOf(Designator) < 0 then Wanted := False;
+
+            if Wanted then
+            begin
+                Total := Total + 1;
+                if Kept < MaxPads then
+                begin
+                    Kept := Kept + 1;
+                    Props := TStringList.Create;
+                    try
+                        AddJSONProperty(Props, 'designator', Designator);
+                        AddJSONProperty(Props, 'pad', Pad.Name);
+                        AddJSONProperty(Props, 'net', NetName);
+                        AddJSONNumber(Props, 'x', CoordToMils(Pad.x));
+                        AddJSONNumber(Props, 'y', CoordToMils(Pad.y));
+                        AddJSONProperty(Props, 'layer', Board.LayerName(Pad.Layer));
+                        AddJSONNumber(Props, 'size_x_mils', CoordToMils(Pad.TopXSize));
+                        AddJSONNumber(Props, 'size_y_mils', CoordToMils(Pad.TopYSize));
+                        AddJSONNumber(Props, 'hole_size_mils', CoordToMils(Pad.HoleSize));
+                        AddJSONNumber(Props, 'rotation', Pad.Rotation);
+                        // Raw shape enum, same convention as get_footprint_primitives.
+                        AddJSONInteger(Props, 'shape', Pad.TopShape);
+                        Entries.Add(BuildJSONObject(Props));
+                    finally
+                        Props.Free;
+                    end;
+                end;
+            end;
+            Pad := Iterator.NextPCBObject;
+        end;
+        Board.BoardIterator_Destroy(Iterator);
+
+        AddJSONInteger(Summary, 'total_pads', Total);
+        AddJSONInteger(Summary, 'returned_pads', Kept);
+        AddJSONBoolean(Summary, 'truncated', Kept < Total);
+        Summary.Add(Trim(BuildJSONArray(Entries, 'pads')));
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONObject(Summary);
+            Result := WriteJSONToFile(OutputLines, ROOT_DIR + '\temp_pad_data.json');
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        Summary.Free;
+        Entries.Free;
+    end;
+end;
+
+{..............................................................................}
+{ select_objects_at - select whatever sits near a coordinate, in Altium.       }
+{                                                                              }
+{ Selection is set from scratch each call: everything in the searched kinds is }
+{ deselected first, so the result is exactly what matched and not an           }
+{ accumulation across calls.                                                   }
+{..............................................................................}
+function SelectObjectsAt(ROOT_DIR: String; X, Y, Radius: Double; MaxHits: Integer): String;
+var
+    Board       : IPCB_Board;
+    Iterator    : IPCB_BoardIterator;
+    Prim        : IPCB_Primitive;
+    Props       : TStringList;
+    Hits        : TStringList;
+    HProps      : TStringList;
+    OutputLines : TStringList;
+    Pass, Found : Integer;
+    NetName     : String;
+begin
+    Result := '{"success": false, "error": "No PCB document is currently active - open a .PcbDoc and retry"}';
+    Board := GetBoardSafe(0);
+    if Board = nil then Exit;
+
+    if Radius <= 0 then Radius := 25;
+    if MaxHits <= 0 then MaxHits := 50;
+
+    Props := TStringList.Create;
+    Hits := TStringList.Create;
+    try
+        Found := 0;
+        // One pass per object kind rather than a combined set: MkSet is only
+        // ever used with a single argument elsewhere in this codebase.
+        for Pass := 0 to 4 do
+        begin
+            Iterator := Board.BoardIterator_Create;
+            case Pass of
+                0: Iterator.AddFilter_ObjectSet(MkSet(ePadObject));
+                1: Iterator.AddFilter_ObjectSet(MkSet(eTrackObject));
+                2: Iterator.AddFilter_ObjectSet(MkSet(eViaObject));
+                3: Iterator.AddFilter_ObjectSet(MkSet(eArcObject));
+                4: Iterator.AddFilter_ObjectSet(MkSet(ePolyObject));
+            end;
+            Iterator.AddFilter_LayerSet(AllLayers);
+            Iterator.AddFilter_Method(eProcessAll);
+            Prim := Iterator.FirstPCBObject;
+            while (Prim <> nil) do
+            begin
+                if PrimNearPoint(Prim, X, Y, Radius) then
+                begin
+                    Prim.Selected := True;
+                    Found := Found + 1;
+                    if Hits.Count < MaxHits then
+                    begin
+                        HProps := TStringList.Create;
+                        try
+                            AddJSONProperty(HProps, 'kind', Prim.ObjectIDString);
+                            AddJSONProperty(HProps, 'layer', Board.LayerName(Prim.Layer));
+                            NetName := PrimNetName(Prim);
+                            AddJSONProperty(HProps, 'net', NetName);
+                            AddJSONNumber(HProps, 'x',
+                                (CoordToMils(Prim.BoundingRectangle.Left) +
+                                 CoordToMils(Prim.BoundingRectangle.Right)) / 2);
+                            AddJSONNumber(HProps, 'y',
+                                (CoordToMils(Prim.BoundingRectangle.Bottom) +
+                                 CoordToMils(Prim.BoundingRectangle.Top)) / 2);
+                            Hits.Add(BuildJSONObject(HProps));
+                        finally
+                            HProps.Free;
+                        end;
+                    end;
+                end
+                else
+                    Prim.Selected := False;
+                Prim := Iterator.NextPCBObject;
+            end;
+            Board.BoardIterator_Destroy(Iterator);
+        end;
+
+        Board.ViewManager_FullUpdate;
+
+        AddJSONBoolean(Props, 'success', True);
+        AddJSONNumber(Props, 'x', X);
+        AddJSONNumber(Props, 'y', Y);
+        AddJSONNumber(Props, 'radius_mils', Radius);
+        AddJSONInteger(Props, 'selected_count', Found);
+        AddJSONBoolean(Props, 'truncated', Hits.Count < Found);
+        Props.Add(Trim(BuildJSONArray(Hits, 'selected')));
+        AddJSONProperty(Props, 'note',
+            'Objects are selected in Altium. Use Edit > Jump > Selection, or the ' +
+            'PCB panel, to bring them into view.');
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONObject(Props);
+            Result := WriteJSONToFile(OutputLines, ROOT_DIR + '\temp_select_at.json');
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        Hits.Free;
+        Props.Free;
+    end;
+end;

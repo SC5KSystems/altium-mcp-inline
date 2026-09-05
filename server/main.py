@@ -2403,6 +2403,88 @@ async def get_pcb_rules(ctx: Context) -> str:
     return json.dumps(rules_data, indent=2)
 
 @mcp.tool()
+async def get_pad_data(ctx: Context, net_names: list = None, designators: list = None,
+                       max_pads: int = 300) -> str:
+    """
+    Get pads filtered by net and/or component, with position, size and hole.
+
+    Pads had no direct query before this: reaching one meant going through
+    get_component_pins or raw script, which is awkward when the thing you are
+    chasing is a pad-level problem - minimum annular ring violations being the
+    obvious case, since those are pad geometry against hole size.
+
+    Both filters are optional and combine: give net_names alone for every pad on
+    a net, designators alone for every pad on a part, or both to intersect them.
+
+    Note that pad names are NOT unique - a connector can carry many pads all
+    named "1", and mounting holes come through with an empty designator. Use
+    position to tell them apart.
+
+    Args:
+        net_names (list, optional): Nets to report. Omit for any net.
+        designators (list, optional): Components to report. Omit for any.
+        max_pads (int): Cap on pads returned. Default 300. total_pads always
+            reflects every match regardless of the cap.
+
+    Returns:
+        str: JSON with total_pads, returned_pads, truncated and pads.
+             Coordinates and sizes are in mils.
+    """
+    logger.info(f"Getting pad data nets={net_names} designators={designators}")
+    response = await altium_bridge.execute_command(
+        "get_pad_data",
+        {"net_names": net_names or [], "designators": designators or [],
+         "max_pads": max_pads}
+    )
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error getting pad data: {error_msg}")
+        return json.dumps({"error": f"Failed to get pad data: {error_msg}"})
+    return json.dumps(response.get("result", {}), indent=2)
+
+
+@mcp.tool()
+async def select_objects_at(ctx: Context, x: float, y: float,
+                            radius_mils: float = 25, max_hits: int = 50) -> str:
+    """
+    Select whatever sits near a coordinate, in Altium. MODIFIES THE SELECTION.
+
+    Closes the loop between analysis and the screen. Tools here hand back
+    coordinates - a violation centre, the narrowest segment on a net - that
+    otherwise have to be hunted down by hand. This selects the objects there so
+    you can look at them.
+
+    Selection is rebuilt from scratch each call: everything of the searched
+    kinds is deselected first, so the result is exactly what matched rather than
+    an accumulation across calls. Pads, tracks, vias, arcs and polygons are
+    searched. Matching is against each object's bounding box grown by
+    radius_mils, so a generous radius on a dense area will select a lot.
+
+    This changes only the selection, not the design.
+
+    Args:
+        x (float): X coordinate in mils.
+        y (float): Y coordinate in mils.
+        radius_mils (float): Search radius. Default 25.
+        max_hits (int): Cap on objects described in the response. Default 50;
+            selected_count reports everything selected regardless.
+
+    Returns:
+        str: JSON with selected_count and a description of each hit.
+    """
+    logger.info(f"Selecting objects at ({x}, {y}) r={radius_mils}")
+    response = await altium_bridge.execute_command(
+        "select_objects_at",
+        {"x": x, "y": y, "radius_mils": radius_mils, "max_hits": max_hits}
+    )
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error selecting objects: {error_msg}")
+        return json.dumps({"error": f"Failed to select objects: {error_msg}"})
+    return json.dumps(response.get("result", {}), indent=2)
+
+
+@mcp.tool()
 async def get_polygon_pour_primitives(ctx: Context, net_names: list = None,
                                       include_contours: bool = False,
                                       max_points: int = 2000) -> str:
