@@ -2612,8 +2612,14 @@ async def get_pcb_rules_parsed(ctx: Context) -> str:
                                 relief_conductor_mils, relief_air_gap_mils
       Power Plane Connect Style relief_entries, relief_conductor_mils
 
-    Other kinds carry the descriptor only. Width constraints can differ per
-    layer; the reported values are the top-layer ones.
+    Other kinds carry the descriptor only.
+
+    Width constraints are stored per layer and really can differ between them,
+    so every width rule reports per_layer_widths for the whole stack plus
+    width_varies_by_layer. The scalar min/max/preferred_width_mils fields are
+    present ONLY when all layers agree - a single number for a rule meaning 25
+    mils on top and 10 on the bottom would be worse than no number, so check
+    width_varies_by_layer before reading them.
 
     Returns:
         str: JSON array of rules.

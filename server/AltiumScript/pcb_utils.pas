@@ -3621,17 +3621,35 @@ var
     Board       : IPCB_Board;
     Iterator    : IPCB_BoardIterator;
     Rule        : IPCB_Rule;
+    LayerIter   : IPCB_LayerObjectIterator;
+    LayerObj    : IPCB_LayerObject;
     Entries     : TStringList;
     Props       : TStringList;
+    LayerIds    : TStringList;
+    PerLayer    : TStringList;
+    LProps      : TStringList;
     OutputLines : TStringList;
-    Kind        : Integer;
+    Kind, li, LayerId : Integer;
+    MinW, MaxW, PrefW, FirstMin, FirstMax, FirstPref : Double;
+    Varies      : Boolean;
+    LayerEntry  : String;
 begin
     Result := '{"success": false, "error": "No PCB document is currently active - open a .PcbDoc and retry"}';
     Board := GetBoardSafe(0);
     if Board = nil then Exit;
 
     Entries := TStringList.Create;
+    LayerIds := TStringList.Create;
     try
+        // Collected before the rule walk so no layer iterator is ever open
+        // inside the board iterator.
+        LayerIter := Board.ElectricalLayerIterator;
+        while LayerIter.Next do
+        begin
+            LayerObj := LayerIter.LayerObject;
+            LayerIds.Add(IntToStr(LayerObj.LayerID) + '|' + LayerObj.Name);
+        end;
+
         Iterator := Board.BoardIterator_Create;
         Iterator.AddFilter_ObjectSet(MkSet(eRuleObject));
         Iterator.AddFilter_LayerSet(AllLayers);
@@ -3653,12 +3671,59 @@ begin
 
                 if Kind = 2 then
                 begin
-                    // Width Constraint. Widths are indexed per layer; these are
-                    // the top-layer values, which is what a uniform rule reports
-                    // on every layer anyway.
-                    AddJSONNumber(Props, 'min_width_mils', CoordToMils(Rule.MinWidth[eTopLayer]));
-                    AddJSONNumber(Props, 'max_width_mils', CoordToMils(Rule.MaxWidth[eTopLayer]));
-                    AddJSONNumber(Props, 'preferred_width_mils', CoordToMils(Rule.FavoredWidth[eTopLayer]));
+                    // Width Constraint. Widths really are stored per layer and
+                    // really can differ, so every layer is reported. The scalar
+                    // fields are emitted ONLY when all layers agree - a single
+                    // number for a rule that means 25 mils on top and 10 on the
+                    // bottom would be worse than no number at all.
+                    PerLayer := TStringList.Create;
+                    try
+                        Varies := False;
+                        FirstMin := 0;
+                        FirstMax := 0;
+                        FirstPref := 0;
+                        for li := 0 to LayerIds.Count - 1 do
+                        begin
+                            LayerEntry := LayerIds[li];
+                            LayerId := StrToInt(Copy(LayerEntry, 1, Pos('|', LayerEntry) - 1));
+                            MinW := CoordToMils(Rule.MinWidth[LayerId]);
+                            MaxW := CoordToMils(Rule.MaxWidth[LayerId]);
+                            PrefW := CoordToMils(Rule.FavoredWidth[LayerId]);
+
+                            if li = 0 then
+                            begin
+                                FirstMin := MinW;
+                                FirstMax := MaxW;
+                                FirstPref := PrefW;
+                            end
+                            else if (MinW <> FirstMin) or (MaxW <> FirstMax) or
+                                    (PrefW <> FirstPref) then
+                                Varies := True;
+
+                            LProps := TStringList.Create;
+                            try
+                                AddJSONProperty(LProps, 'layer',
+                                    Copy(LayerEntry, Pos('|', LayerEntry) + 1, Length(LayerEntry)));
+                                AddJSONNumber(LProps, 'min_width_mils', MinW);
+                                AddJSONNumber(LProps, 'max_width_mils', MaxW);
+                                AddJSONNumber(LProps, 'preferred_width_mils', PrefW);
+                                PerLayer.Add(BuildJSONObject(LProps));
+                            finally
+                                LProps.Free;
+                            end;
+                        end;
+
+                        AddJSONBoolean(Props, 'width_varies_by_layer', Varies);
+                        if not Varies then
+                        begin
+                            AddJSONNumber(Props, 'min_width_mils', FirstMin);
+                            AddJSONNumber(Props, 'max_width_mils', FirstMax);
+                            AddJSONNumber(Props, 'preferred_width_mils', FirstPref);
+                        end;
+                        Props.Add(Trim(BuildJSONArray(PerLayer, 'per_layer_widths')));
+                    finally
+                        PerLayer.Free;
+                    end;
                 end
                 else if Kind = 0 then
                 begin
@@ -3697,6 +3762,7 @@ begin
             OutputLines.Free;
         end;
     finally
+        LayerIds.Free;
         Entries.Free;
     end;
 end;
