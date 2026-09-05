@@ -2403,35 +2403,44 @@ async def get_pcb_rules(ctx: Context) -> str:
     return json.dumps(rules_data, indent=2)
 
 @mcp.tool()
-async def get_net_classes(ctx: Context) -> str:
+async def get_object_classes(ctx: Context) -> str:
     """
-    Get the net classes defined on the current PCB and which nets belong to each.
+    Get every object class defined on the current PCB and its members.
 
-    Rule scope expressions routinely reference classes - InNetClass('Power') and
-    similar - so this is what tells you whether a scoped rule can actually reach
-    a given net. A rule scoped to a class that does not exist, or that does not
-    contain the net in question, silently loses to a lower-priority default rule
-    and nothing in the rule listing itself reveals that. Pair this with
-    get_pcb_rules_parsed when a net is behaving as though a rule is not applying.
+    Rule scope expressions reach for classes of several kinds - InNetClass,
+    InPadClass, InComponentClass - so a net-class-only listing hides half the
+    ways a scoped rule can fail to apply. Use this with get_pcb_rules_parsed
+    whenever a rule appears not to be taking effect.
+
+    Two failure modes look identical in the rule listing and only show up here.
+    A rule may be scoped to a class that does not exist at all; or to a class
+    that exists but is EMPTY, which kills the rule just as thoroughly. That is
+    why member_count is reported rather than mere existence.
+
+    Members are enumerated for the kinds whose objects can be walked - nets,
+    components, pads and polygons. Other kinds (layers, from-tos, xSignals,
+    differential pairs) report members_enumerated false rather than an empty
+    list, so "has no members" is never confused with "were not counted".
 
     Returns:
-        str: JSON array of classes, each with name, is_super_class, member_count
-             and the list of member nets.
+        str: JSON array of classes, each with name, member_kind,
+             member_kind_name, is_super_class, members_enumerated, and where
+             enumerated, member_count and the member list.
     """
-    logger.info("Getting net classes")
+    logger.info("Getting object classes")
 
-    response = await altium_bridge.execute_command("get_net_classes", {})
+    response = await altium_bridge.execute_command("get_object_classes", {})
 
     if not response.get("success", False):
         error_msg = response.get("error", "Unknown error")
-        logger.error(f"Error getting net classes: {error_msg}")
-        return json.dumps({"error": f"Failed to get net classes: {error_msg}"})
+        logger.error(f"Error getting object classes: {error_msg}")
+        return json.dumps({"error": f"Failed to get object classes: {error_msg}"})
 
     classes = response.get("result", [])
     if not classes:
-        return json.dumps({"message": "No net classes defined in the current PCB document"})
+        return json.dumps({"message": "No object classes defined in the current PCB document"})
 
-    logger.info(f"Retrieved {len(classes)} net class(es)")
+    logger.info(f"Retrieved {len(classes)} object class(es)")
     return json.dumps(classes, indent=2)
 
 

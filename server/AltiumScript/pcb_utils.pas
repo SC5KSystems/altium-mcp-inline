@@ -3398,84 +3398,169 @@ end;
 {..............................................................................}
 
 {..............................................................................}
-{ get_net_classes - class names and their member nets.                         }
+{ get_object_classes - every object class on the board, with its members.      }
 {                                                                              }
-{ Membership is resolved by asking each class about each net rather than by    }
-{ enumerating members directly, which is the interface Altium reliably         }
-{ exposes here.                                                                }
+{ Rule scopes reach for classes of several kinds - InNetClass, InPadClass,     }
+{ InComponentClass - so listing only net classes hides half the ways a scoped  }
+{ rule can fail to apply. And a class that exists but is EMPTY kills a rule    }
+{ exactly as thoroughly as one that was never created, which is why            }
+{ member_count is reported rather than mere existence.                         }
+{                                                                              }
+{ Members are enumerated for the kinds whose objects can be walked: nets,      }
+{ components, pads and polygons. Other kinds report the class itself with      }
+{ members_enumerated false rather than an empty list, so "no members" is never }
+{ confused with "not counted".                                                 }
 {..............................................................................}
-function GetNetClasses(ROOT_DIR: String): String;
+
+// Readable name for a class member kind. Values are the raw MemberKind integers, since
+// only some eClassMemberKind_* constants are confirmed present in this build.
+function ClassKindName(KindValue: Integer): String;
+begin
+    case KindValue of
+        0:  Result := 'Net';
+        1:  Result := 'Component';
+        2:  Result := 'From-To';
+        3:  Result := 'Pad';
+        4:  Result := 'Layer';
+        6:  Result := 'Differential Pair';
+        7:  Result := 'Polygon';
+        10: Result := 'xSignal';
+        12: Result := 'xNet';
+    else
+        Result := 'Kind' + IntToStr(KindValue);
+    end;
+end;
+
+// A readable identity for a class member, by kind.
+function ClassMemberLabel(Board: IPCB_Board; Obj: IPCB_Primitive; KindValue: Integer): String;
+begin
+    Result := '';
+    case KindValue of
+        0: Result := Obj.Name;
+        1: Result := Obj.Name.Text;
+        3:
+        begin
+            if Obj.Component <> nil then
+                Result := Obj.Component.Name.Text + '.' + Obj.Name
+            else
+                Result := Obj.Name;
+        end;
+        7:
+        begin
+            if Obj.Net <> nil then
+                Result := Obj.Net.Name + '@' + Board.LayerName(Obj.Layer)
+            else
+                Result := '(no net)@' + Board.LayerName(Obj.Layer);
+        end;
+    end;
+end;
+
+// Whether this kind's member objects can be walked with a board iterator.
+// The object set itself is applied inline, so enum values never round-trip
+// through an Integer on the way into MkSet.
+function ClassKindIsWalkable(KindValue: Integer): Boolean;
+begin
+    Result := (KindValue = 0) or (KindValue = 1) or (KindValue = 3) or (KindValue = 7);
+end;
+
+function GetObjectClasses(ROOT_DIR: String): String;
 var
     Board        : IPCB_Board;
     ClassIter    : IPCB_BoardIterator;
-    NetIter      : IPCB_BoardIterator;
-    NetClass     : IPCB_ObjectClass;
-    Net          : IPCB_Net;
+    MemberIter   : IPCB_BoardIterator;
+    ObjClass     : IPCB_ObjectClass;
+    Obj          : IPCB_Primitive;
     Entries      : TStringList;
     Props        : TStringList;
     Members      : TStringList;
-    ClassNames   : TStringList;
+    ClassKeys    : TStringList;
     OutputLines  : TStringList;
-    i            : Integer;
+    i, KindValue, CurKind : Integer;
+    ClassName, MemberLabel : String;
 begin
     Result := '{"success": false, "error": "No PCB document is currently active - open a .PcbDoc and retry"}';
     Board := GetBoardSafe(0);
     if Board = nil then Exit;
 
     Entries := TStringList.Create;
-    ClassNames := TStringList.Create;
+    ClassKeys := TStringList.Create;
     try
-        // Collect the class names first so the net iterator is never open at
-        // the same time as the class iterator.
+        // Record kind+name first, so the class iterator is closed before any
+        // member iterator opens. Nested board iterators are avoided throughout.
         ClassIter := Board.BoardIterator_Create;
         ClassIter.SetState_FilterAll;
         ClassIter.AddFilter_ObjectSet(MkSet(eClassObject));
-        NetClass := ClassIter.FirstPCBObject;
-        while (NetClass <> nil) do
+        ObjClass := ClassIter.FirstPCBObject;
+        while (ObjClass <> nil) do
         begin
-            if NetClass.MemberKind = eClassMemberKind_Net then
-                ClassNames.Add(NetClass.Name);
-            NetClass := ClassIter.NextPCBObject;
+            ClassKeys.Add(IntToStr(ObjClass.MemberKind) + '|' + ObjClass.Name);
+            ObjClass := ClassIter.NextPCBObject;
         end;
         Board.BoardIterator_Destroy(ClassIter);
 
-        for i := 0 to ClassNames.Count - 1 do
+        for i := 0 to ClassKeys.Count - 1 do
         begin
-            // Re-find the class by name, then walk the nets against it.
+            KindValue := StrToInt(GetFieldFromPipeString(ClassKeys[i], 0));
+            ClassName := GetFieldFromPipeString(ClassKeys[i], 1);
+
             ClassIter := Board.BoardIterator_Create;
             ClassIter.SetState_FilterAll;
             ClassIter.AddFilter_ObjectSet(MkSet(eClassObject));
-            NetClass := ClassIter.FirstPCBObject;
-            while (NetClass <> nil) do
+            ObjClass := ClassIter.FirstPCBObject;
+            while (ObjClass <> nil) do
             begin
-                if (NetClass.MemberKind = eClassMemberKind_Net) and
-                   (NetClass.Name = ClassNames[i]) then Break;
-                NetClass := ClassIter.NextPCBObject;
+                // Assign the kind out to an Integer before comparing; the
+                // enum-to-Integer assignment is proven, an enum-to-Integer
+                // comparison is not.
+                CurKind := ObjClass.MemberKind;
+                if (CurKind = KindValue) and (ObjClass.Name = ClassName) then Break;
+                ObjClass := ClassIter.NextPCBObject;
             end;
             Board.BoardIterator_Destroy(ClassIter);
-            if NetClass = nil then Continue;
+            if ObjClass = nil then Continue;
 
             Props := TStringList.Create;
             Members := TStringList.Create;
             try
-                AddJSONProperty(Props, 'name', NetClass.Name);
-                AddJSONBoolean(Props, 'is_super_class', NetClass.SuperClass);
+                AddJSONProperty(Props, 'name', ObjClass.Name);
+                AddJSONInteger(Props, 'member_kind', KindValue);
+                AddJSONProperty(Props, 'member_kind_name', ClassKindName(KindValue));
+                AddJSONBoolean(Props, 'is_super_class', ObjClass.SuperClass);
 
-                NetIter := Board.BoardIterator_Create;
-                NetIter.AddFilter_ObjectSet(MkSet(eNetObject));
-                NetIter.AddFilter_LayerSet(AllLayers);
-                NetIter.AddFilter_Method(eProcessAll);
-                Net := NetIter.FirstPCBObject;
-                while (Net <> nil) do
+                if not ClassKindIsWalkable(KindValue) then
                 begin
-                    if NetClass.IsMember(Net) then
-                        Members.Add('"' + JSONEscapeString(Net.Name) + '"');
-                    Net := NetIter.NextPCBObject;
-                end;
-                Board.BoardIterator_Destroy(NetIter);
+                    // Not walkable here - say so rather than implying zero.
+                    AddJSONBoolean(Props, 'members_enumerated', False);
+                end
+                else
+                begin
+                    MemberIter := Board.BoardIterator_Create;
+                    case KindValue of
+                        0: MemberIter.AddFilter_ObjectSet(MkSet(eNetObject));
+                        1: MemberIter.AddFilter_ObjectSet(MkSet(eComponentObject));
+                        3: MemberIter.AddFilter_ObjectSet(MkSet(ePadObject));
+                        7: MemberIter.AddFilter_ObjectSet(MkSet(ePolyObject));
+                    end;
+                    MemberIter.AddFilter_LayerSet(AllLayers);
+                    MemberIter.AddFilter_Method(eProcessAll);
+                    Obj := MemberIter.FirstPCBObject;
+                    while (Obj <> nil) do
+                    begin
+                        if ObjClass.IsMember(Obj) then
+                        begin
+                            MemberLabel := ClassMemberLabel(Board, Obj, KindValue);
+                            if MemberLabel <> '' then
+                                Members.Add('"' + JSONEscapeString(MemberLabel) + '"');
+                        end;
+                        Obj := MemberIter.NextPCBObject;
+                    end;
+                    Board.BoardIterator_Destroy(MemberIter);
 
-                AddJSONInteger(Props, 'member_count', Members.Count);
-                Props.Add(Trim(BuildJSONArray(Members, 'nets')));
+                    AddJSONBoolean(Props, 'members_enumerated', True);
+                    AddJSONInteger(Props, 'member_count', Members.Count);
+                    Props.Add(Trim(BuildJSONArray(Members, 'members')));
+                end;
+
                 Entries.Add(BuildJSONObject(Props));
             finally
                 Members.Free;
@@ -3486,12 +3571,12 @@ begin
         OutputLines := TStringList.Create;
         try
             OutputLines.Text := BuildJSONArray(Entries);
-            Result := WriteJSONToFile(OutputLines, ROOT_DIR + '\temp_net_classes.json');
+            Result := WriteJSONToFile(OutputLines, ROOT_DIR + '\temp_object_classes.json');
         finally
             OutputLines.Free;
         end;
     finally
-        ClassNames.Free;
+        ClassKeys.Free;
         Entries.Free;
     end;
 end;
