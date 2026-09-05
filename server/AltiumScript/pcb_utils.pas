@@ -3845,3 +3845,205 @@ begin
         Entries.Free;
     end;
 end;
+
+{..............................................................................}
+{ Rule writes. The only functions here that change the design.                 }
+{                                                                              }
+{ Width constraints are stored PER LAYER. Setting one layer leaves the rest at }
+{ the factory default, which produces a rule that quietly means something      }
+{ different on every layer, so create_width_rule writes every electrical layer }
+{ in the stack.                                                                }
+{                                                                              }
+{ Adding a rule also renumbers priorities within its kind: a new rule lands at }
+{ priority 1 and pushes the existing rules of that kind down. That is Altium's }
+{ behaviour, not a choice made here, and it is reported back so the caller is  }
+{ not surprised by a rule that suddenly outranks the one it was meant to       }
+{ supplement.                                                                  }
+{..............................................................................}
+
+// Find a rule by exact name, or nil.
+function FindRuleByName(Board: IPCB_Board; RuleName: String): IPCB_Rule;
+var
+    Iterator : IPCB_BoardIterator;
+    Rule     : IPCB_Rule;
+begin
+    Result := nil;
+    Iterator := Board.BoardIterator_Create;
+    Iterator.AddFilter_ObjectSet(MkSet(eRuleObject));
+    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_Method(eProcessAll);
+    Rule := Iterator.FirstPCBObject;
+    while (Rule <> nil) do
+    begin
+        if Rule.Name = RuleName then Result := Rule;
+        Rule := Iterator.NextPCBObject;
+    end;
+    Board.BoardIterator_Destroy(Iterator);
+end;
+
+{..............................................................................}
+{ create_width_rule - a width constraint scoped to an expression.              }
+{..............................................................................}
+function CreateWidthRule(ROOT_DIR: String; RuleName, ScopeExpr: String;
+                         MinMils, PreferredMils, MaxMils: Double): String;
+var
+    Board       : IPCB_Board;
+    Rule        : IPCB_Rule;
+    LayerIter   : IPCB_LayerObjectIterator;
+    LayerObj    : IPCB_LayerObject;
+    Props       : TStringList;
+    Layers      : TStringList;
+    OutputLines : TStringList;
+    LayerCount  : Integer;
+begin
+    Props := TStringList.Create;
+    Layers := TStringList.Create;
+    try
+        Board := GetBoardSafe(0);
+        if Board = nil then
+        begin
+            AddJSONBoolean(Props, 'success', False);
+            AddJSONProperty(Props, 'error',
+                'No PCB document is currently active - open a .PcbDoc and retry');
+        end
+        else if Trim(RuleName) = '' then
+        begin
+            AddJSONBoolean(Props, 'success', False);
+            AddJSONProperty(Props, 'error', 'A rule name is required');
+        end
+        else if FindRuleByName(Board, RuleName) <> nil then
+        begin
+            // Never silently redefine an existing rule.
+            AddJSONBoolean(Props, 'success', False);
+            AddJSONProperty(Props, 'error',
+                'A rule named "' + RuleName + '" already exists - choose another name, ' +
+                'or delete the existing rule in Altium first');
+        end
+        else if (MinMils <= 0) or (MaxMils <= 0) or (PreferredMils <= 0) then
+        begin
+            AddJSONBoolean(Props, 'success', False);
+            AddJSONProperty(Props, 'error', 'Widths must all be greater than zero');
+        end
+        else if (MinMils > PreferredMils) or (PreferredMils > MaxMils) then
+        begin
+            AddJSONBoolean(Props, 'success', False);
+            AddJSONProperty(Props, 'error',
+                'Widths must satisfy min <= preferred <= max');
+        end
+        else
+        begin
+            PCBServer.PreProcess;
+            // Rule kind 2 is the width constraint. Kinds are passed as integers
+            // because only eRule_PolygonConnectStyle is confirmed to exist as a
+            // named constant in this build, and an unknown identifier is a
+            // compile error that wedges the script executor.
+            Rule := PCBServer.PCBRuleFactory(2);
+            Rule.Name := RuleName;
+            Rule.Scope1Expression := ScopeExpr;
+
+            // Every electrical layer, or the rule means different things per layer.
+            LayerCount := 0;
+            LayerIter := Board.ElectricalLayerIterator;
+            while LayerIter.Next do
+            begin
+                LayerObj := LayerIter.LayerObject;
+                Rule.MinWidth[LayerObj.LayerID] := MilsToCoord(MinMils);
+                Rule.MaxWidth[LayerObj.LayerID] := MilsToCoord(MaxMils);
+                Rule.FavoredWidth[LayerObj.LayerID] := MilsToCoord(PreferredMils);
+                Layers.Add('"' + JSONEscapeString(LayerObj.Name) + '"');
+                LayerCount := LayerCount + 1;
+            end;
+
+            Board.AddPCBObject(Rule);
+            PCBServer.PostProcess;
+
+            AddJSONBoolean(Props, 'success', True);
+            AddJSONProperty(Props, 'name', Rule.Name);
+            AddJSONProperty(Props, 'scope', Rule.Scope1Expression);
+            AddJSONNumber(Props, 'min_width_mils', MinMils);
+            AddJSONNumber(Props, 'preferred_width_mils', PreferredMils);
+            AddJSONNumber(Props, 'max_width_mils', MaxMils);
+            AddJSONInteger(Props, 'layers_set', LayerCount);
+            Props.Add(Trim(BuildJSONArray(Layers, 'layers')));
+            // Altium assigns this on insert and pushes other width rules down.
+            AddJSONInteger(Props, 'assigned_priority', Rule.Priority);
+            AddJSONProperty(Props, 'descriptor', Rule.Descriptor);
+            AddJSONProperty(Props, 'note',
+                'Adding a rule renumbers priorities within its kind: this rule took ' +
+                'priority ' + IntToStr(Rule.Priority) + ' and existing width rules moved down. ' +
+                'The change is undoable in Altium and is not written to disk until the board is saved.');
+        end;
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONObject(Props);
+            Result := WriteJSONToFile(OutputLines, ROOT_DIR + '\temp_create_width_rule.json');
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        Layers.Free;
+        Props.Free;
+    end;
+end;
+
+{..............................................................................}
+{ set_rule_enabled - turn a rule on or off by name.                            }
+{..............................................................................}
+function SetRuleEnabled(ROOT_DIR: String; RuleName: String; Enabled: Boolean): String;
+var
+    Board       : IPCB_Board;
+    Rule        : IPCB_Rule;
+    Props       : TStringList;
+    OutputLines : TStringList;
+    WasEnabled  : Boolean;
+begin
+    Props := TStringList.Create;
+    try
+        Board := GetBoardSafe(0);
+        if Board = nil then
+        begin
+            AddJSONBoolean(Props, 'success', False);
+            AddJSONProperty(Props, 'error',
+                'No PCB document is currently active - open a .PcbDoc and retry');
+        end
+        else
+        begin
+            Rule := FindRuleByName(Board, RuleName);
+            if Rule = nil then
+            begin
+                AddJSONBoolean(Props, 'success', False);
+                AddJSONProperty(Props, 'error',
+                    'No rule named "' + RuleName + '" on this board - ' +
+                    'use get_pcb_rules_parsed to list the rule names');
+            end
+            else
+            begin
+                WasEnabled := Rule.Enabled;
+                PCBServer.PreProcess;
+                Rule.Enabled := Enabled;
+                PCBServer.PostProcess;
+
+                AddJSONBoolean(Props, 'success', True);
+                AddJSONProperty(Props, 'name', Rule.Name);
+                AddJSONProperty(Props, 'rule_kind_name', Rule.GetState_ShortDescriptorString);
+                AddJSONBoolean(Props, 'was_enabled', WasEnabled);
+                // Read back rather than echoing the request.
+                AddJSONBoolean(Props, 'now_enabled', Rule.Enabled);
+                AddJSONBoolean(Props, 'changed', WasEnabled <> Rule.Enabled);
+                AddJSONProperty(Props, 'note',
+                    'Undoable in Altium; not written to disk until the board is saved.');
+            end;
+        end;
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONObject(Props);
+            Result := WriteJSONToFile(OutputLines, ROOT_DIR + '\temp_set_rule_enabled.json');
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        Props.Free;
+    end;
+end;

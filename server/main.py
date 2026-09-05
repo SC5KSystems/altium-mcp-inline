@@ -2403,6 +2403,100 @@ async def get_pcb_rules(ctx: Context) -> str:
     return json.dumps(rules_data, indent=2)
 
 @mcp.tool()
+async def create_width_rule(ctx: Context, name: str, min_width_mils: float,
+                            preferred_width_mils: float, max_width_mils: float,
+                            scope: str = "All") -> str:
+    """
+    Create a width constraint rule on the current PCB. MODIFIES THE DESIGN.
+
+    Width constraints are stored per layer in Altium, so this writes every
+    electrical layer in the stack. Setting only one would leave the others at
+    the factory default and produce a rule that quietly means something
+    different on each layer.
+
+    Be aware that adding a rule renumbers priorities within its kind: the new
+    rule takes priority 1 and existing width rules move down. The response
+    reports assigned_priority so this is visible. Use get_pcb_rules_parsed
+    afterwards to see the resulting order.
+
+    Creating a rule fails rather than overwriting if the name is already taken.
+    The change is undoable in Altium and is not written to disk until the board
+    is saved.
+
+    Args:
+        name (str): Rule name, must not already exist on the board.
+        min_width_mils (float): Minimum width.
+        preferred_width_mils (float): Preferred width.
+        max_width_mils (float): Maximum width. Requires min <= preferred <= max.
+        scope (str): Altium scope expression the rule applies to, e.g.
+            "InNetClass('Power')", "InNet('RECT+')" or "All". Defaults to "All".
+            Note that a scope naming a class that does not exist, or is empty,
+            silently matches nothing - check with get_object_classes first.
+
+    Returns:
+        str: JSON with success, the rule as created, layers_set and
+             assigned_priority; or success false and an error explaining why.
+    """
+    logger.info(f"Creating width rule {name!r} scope={scope!r} "
+                f"({min_width_mils}/{preferred_width_mils}/{max_width_mils} mils)")
+
+    response = await altium_bridge.execute_command(
+        "create_width_rule",
+        {
+            "name": name,
+            "scope": scope,
+            "min_width_mils": min_width_mils,
+            "preferred_width_mils": preferred_width_mils,
+            "max_width_mils": max_width_mils,
+        }
+    )
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error creating width rule: {error_msg}")
+        return json.dumps({"error": f"Failed to create width rule: {error_msg}"})
+
+    return json.dumps(response.get("result", {}), indent=2)
+
+
+@mcp.tool()
+async def set_rule_enabled(ctx: Context, rule_name: str, enabled: bool) -> str:
+    """
+    Enable or disable an existing design rule by name. MODIFIES THE DESIGN.
+
+    A disabled rule stops being applied and stops producing DRC violations,
+    which is a common way to silence a rule that does not fit the board without
+    deleting it.
+
+    The response reports was_enabled and now_enabled, both read back from the
+    rule rather than echoed from the request, so a no-op is distinguishable
+    from a real change. The change is undoable in Altium and is not written to
+    disk until the board is saved.
+
+    Args:
+        rule_name (str): Exact rule name. Use get_pcb_rules_parsed to list them.
+        enabled (bool): True to enable, False to disable.
+
+    Returns:
+        str: JSON with success, was_enabled, now_enabled and changed; or
+             success false and an error if no rule of that name exists.
+    """
+    logger.info(f"Setting rule {rule_name!r} enabled={enabled}")
+
+    response = await altium_bridge.execute_command(
+        "set_rule_enabled",
+        {"rule_name": rule_name, "enabled": enabled}
+    )
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error setting rule enabled: {error_msg}")
+        return json.dumps({"error": f"Failed to set rule enabled: {error_msg}"})
+
+    return json.dumps(response.get("result", {}), indent=2)
+
+
+@mcp.tool()
 async def get_drc_violations(ctx: Context, rule_names: list = None, max_violations: int = 200) -> str:
     """
     Get the current design rule violations on the PCB, structured.

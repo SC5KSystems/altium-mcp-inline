@@ -1188,6 +1188,57 @@ begin
     end;
 end;
 
+// Extract a single scalar parameter value from the request by key.
+function ExtractScalarParam(RequestData: TStringList; Key: String): String;
+var
+    i, ValueStart : Integer;
+begin
+    Result := '';
+    for i := 0 to RequestData.Count - 1 do
+    begin
+        if (Pos('"' + Key + '"', RequestData[i]) > 0) then
+        begin
+            ValueStart := Pos(':', RequestData[i]) + 1;
+            Result := TrimJSON(Copy(RequestData[i], ValueStart,
+                                    Length(RequestData[i]) - ValueStart + 1));
+        end;
+    end;
+end;
+
+function ExecuteCreateWidthRule(RequestData: TStringList): String;
+var
+    RuleName, ScopeExpr : String;
+    MinMils, PrefMils, MaxMils : Double;
+    S : String;
+begin
+    RuleName := ExtractScalarParam(RequestData, 'name');
+    ScopeExpr := ExtractScalarParam(RequestData, 'scope');
+    if Trim(ScopeExpr) = '' then ScopeExpr := 'All';
+
+    MinMils := 0;
+    PrefMils := 0;
+    MaxMils := 0;
+    S := ExtractScalarParam(RequestData, 'min_width_mils');
+    if S <> '' then MinMils := SafeStrToFloat(S);
+    S := ExtractScalarParam(RequestData, 'preferred_width_mils');
+    if S <> '' then PrefMils := SafeStrToFloat(S);
+    S := ExtractScalarParam(RequestData, 'max_width_mils');
+    if S <> '' then MaxMils := SafeStrToFloat(S);
+
+    Result := CreateWidthRule(ROOT_DIR, RuleName, ScopeExpr, MinMils, PrefMils, MaxMils);
+end;
+
+function ExecuteSetRuleEnabled(RequestData: TStringList): String;
+var
+    RuleName, S : String;
+    Enabled     : Boolean;
+begin
+    RuleName := ExtractScalarParam(RequestData, 'rule_name');
+    S := LowerCase(ExtractScalarParam(RequestData, 'enabled'));
+    Enabled := (Pos('true', S) > 0);
+    Result := SetRuleEnabled(ROOT_DIR, RuleName, Enabled);
+end;
+
 // Function to execute a command with parameters
 function ExecuteCommand(CommandName: String): String;
 var
@@ -1282,6 +1333,10 @@ begin
             Result := GetObjectClasses(ROOT_DIR);
         'get_drc_violations':
             Result := ExecuteGetDRCViolations(RequestData);
+        'create_width_rule':
+            Result := ExecuteCreateWidthRule(RequestData);
+        'set_rule_enabled':
+            Result := ExecuteSetRuleEnabled(RequestData);
         'get_pcb_rules_parsed':
             Result := GetPCBRulesParsed(ROOT_DIR);
         'get_output_job_containers':
