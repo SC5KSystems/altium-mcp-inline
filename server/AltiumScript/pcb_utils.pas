@@ -4528,3 +4528,144 @@ begin
         Props.Free;
     end;
 end;
+
+{..............................................................................}
+{ get_polygon_pour_primitives - the copper a polygon actually poured.          }
+{                                                                              }
+{ get_polygon_data returns the polygon OUTLINE: the boundary someone drew.     }
+{ This returns what Altium actually filled it with, which is a different shape }
+{ - it backs off around pads and clearances, and splits or necks where it must.}
+{ RECT+ shows the gap plainly: a 14-point outline, a 49-point poured contour.  }
+{                                                                              }
+{ That distinction matters for current capacity. A pour neck has to be measured}
+{ on the poured copper, not the outline, because the outline knows nothing      }
+{ about the clearances that created the neck.                                  }
+{                                                                              }
+{ Contours are opt-in and capped: a ground pour can carry thousands of points  }
+{ and would swamp a context window.                                            }
+{..............................................................................}
+function GetPolygonPourPrimitives(ROOT_DIR: String; NetNames: TStringList;
+                                  IncludeContours: Boolean; MaxPoints: Integer): String;
+var
+    Board       : IPCB_Board;
+    Iterator    : IPCB_BoardIterator;
+    GrpIter     : IPCB_GroupIterator;
+    Poly        : IPCB_Primitive;
+    Prim        : IPCB_Primitive;
+    Entries     : TStringList;
+    Props       : TStringList;
+    Regions     : TStringList;
+    RProps      : TStringList;
+    Pts         : TStringList;
+    PProps      : TStringList;
+    OutputLines : TStringList;
+    NetName     : String;
+    PrimCount, PointTotal, HoleTotal, i, n, Emitted : Integer;
+begin
+    Result := '{"success": false, "error": "No PCB document is currently active - open a .PcbDoc and retry"}';
+    Board := GetBoardSafe(0);
+    if Board = nil then Exit;
+
+    if MaxPoints <= 0 then MaxPoints := 2000;
+
+    Entries := TStringList.Create;
+    try
+        Iterator := Board.BoardIterator_Create;
+        Iterator.AddFilter_ObjectSet(MkSet(ePolyObject));
+        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+        Poly := Iterator.FirstPCBObject;
+        while (Poly <> nil) do
+        begin
+            NetName := PrimNetName(Poly);
+            if (NetName <> '') and NetRequested(NetNames, NetName) then
+            begin
+                Props := TStringList.Create;
+                Regions := TStringList.Create;
+                try
+                    PrimCount := 0;
+                    PointTotal := 0;
+                    HoleTotal := 0;
+                    Emitted := 0;
+
+                    GrpIter := Poly.GroupIterator_Create;
+                    Prim := GrpIter.FirstPCBObject;
+                    while (Prim <> nil) do
+                    begin
+                        PrimCount := PrimCount + 1;
+                        // Solid pours come back as PolyRegion; a hatched pour
+                        // yields tracks and arcs instead, which carry no contour.
+                        if Prim.ObjectIDString = 'PolyRegion' then
+                        begin
+                            n := Prim.MainContour.Count;
+                            PointTotal := PointTotal + n;
+                            HoleTotal := HoleTotal + Prim.HoleCount;
+
+                            if IncludeContours then
+                            begin
+                                RProps := TStringList.Create;
+                                Pts := TStringList.Create;
+                                try
+                                    AddJSONInteger(RProps, 'point_count', n);
+                                    AddJSONInteger(RProps, 'hole_count', Prim.HoleCount);
+                                    for i := 0 to n - 1 do
+                                    begin
+                                        if Emitted < MaxPoints then
+                                        begin
+                                            PProps := TStringList.Create;
+                                            try
+                                                AddJSONNumber(PProps, 'x',
+                                                    CoordToMils(Prim.MainContour.X[i]));
+                                                AddJSONNumber(PProps, 'y',
+                                                    CoordToMils(Prim.MainContour.Y[i]));
+                                                Pts.Add(BuildJSONObject(PProps));
+                                            finally
+                                                PProps.Free;
+                                            end;
+                                            Emitted := Emitted + 1;
+                                        end;
+                                    end;
+                                    AddJSONBoolean(RProps, 'contour_truncated', n > Pts.Count);
+                                    RProps.Add(Trim(BuildJSONArray(Pts, 'contour')));
+                                    Regions.Add(BuildJSONObject(RProps));
+                                finally
+                                    Pts.Free;
+                                    RProps.Free;
+                                end;
+                            end;
+                        end;
+                        Prim := GrpIter.NextPCBObject;
+                    end;
+                    Poly.GroupIterator_Destroy(GrpIter);
+
+                    AddJSONProperty(Props, 'net', NetName);
+                    AddJSONProperty(Props, 'layer', Board.LayerName(Poly.Layer));
+                    AddJSONInteger(Props, 'poured_primitive_count', PrimCount);
+                    AddJSONInteger(Props, 'poured_contour_points', PointTotal);
+                    AddJSONInteger(Props, 'poured_hole_count', HoleTotal);
+                    // The drawn boundary, for comparison: a large gap between the
+                    // two is the pour working around pads and clearances.
+                    AddJSONInteger(Props, 'outline_vertex_count', Poly.PointCount);
+                    if IncludeContours then
+                        Props.Add(Trim(BuildJSONArray(Regions, 'regions')));
+                    Entries.Add(BuildJSONObject(Props));
+                finally
+                    Regions.Free;
+                    Props.Free;
+                end;
+            end;
+            Poly := Iterator.NextPCBObject;
+        end;
+        Board.BoardIterator_Destroy(Iterator);
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONArray(Entries);
+            Result := WriteJSONToFile(OutputLines, ROOT_DIR + '\temp_pour_primitives.json');
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        Entries.Free;
+    end;
+end;

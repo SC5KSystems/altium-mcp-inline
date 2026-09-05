@@ -2403,6 +2403,56 @@ async def get_pcb_rules(ctx: Context) -> str:
     return json.dumps(rules_data, indent=2)
 
 @mcp.tool()
+async def get_polygon_pour_primitives(ctx: Context, net_names: list = None,
+                                      include_contours: bool = False,
+                                      max_points: int = 2000) -> str:
+    """
+    Get the copper a polygon actually poured, as opposed to its drawn outline.
+
+    get_polygon_data returns the outline someone drew. This returns what Altium
+    filled it with, which is a different shape: the pour backs off around pads
+    and clearances, and necks or splits where it must. On RECT+ the difference
+    is a 14-point outline against a 49-point poured contour.
+
+    That distinction is what a real current-capacity check needs. A pour neck
+    has to be measured on the poured copper, because the outline knows nothing
+    about the clearances that created the neck. Comparing poured_contour_points
+    against outline_vertex_count is a quick signal of how much the pour had to
+    work around.
+
+    Solid pours come back as a single PolyRegion carrying a contour. Hatched
+    pours yield tracks and arcs instead, which have no contour, so
+    poured_contour_points will be zero while poured_primitive_count is not.
+
+    Contours are opt-in and capped because a ground pour can carry thousands of
+    points; contour_truncated flags any region that was cut short.
+
+    Args:
+        net_names (list, optional): Nets to report. Omit for every net.
+        include_contours (bool): Include the poured point lists. Default False.
+        max_points (int): Cap on contour points returned. Default 2000.
+
+    Returns:
+        str: JSON array, one object per polygon. Coordinates are in mils.
+    """
+    logger.info(f"Getting pour primitives for {net_names or 'all nets'} "
+                f"(contours={include_contours})")
+    response = await altium_bridge.execute_command(
+        "get_polygon_pour_primitives",
+        {"net_names": net_names or [], "include_contours": include_contours,
+         "max_points": max_points}
+    )
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error getting pour primitives: {error_msg}")
+        return json.dumps({"error": f"Failed to get pour primitives: {error_msg}"})
+    pours = response.get("result", [])
+    if not pours:
+        return json.dumps({"message": "No polygons found for the requested nets"})
+    return json.dumps(pours, indent=2)
+
+
+@mcp.tool()
 async def delete_rule(ctx: Context, rule_name: str) -> str:
     """
     Delete a design rule by name. MODIFIES THE DESIGN.

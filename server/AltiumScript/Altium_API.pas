@@ -1297,6 +1297,26 @@ begin
                                 EntriesVal, StyleValue);
 end;
 
+function ExecuteGetPolygonPourPrimitives(RequestData: TStringList): String;
+var
+    NetNames        : TStringList;
+    IncludeContours : Boolean;
+    MaxPoints       : Integer;
+    S               : String;
+begin
+    NetNames := TStringList.Create;
+    try
+        ParseNetNamesRequest(RequestData, NetNames);
+        IncludeContours := (Pos('true',
+            LowerCase(ExtractScalarParam(RequestData, 'include_contours'))) > 0);
+        S := ExtractScalarParam(RequestData, 'max_points');
+        if S = '' then MaxPoints := 2000 else MaxPoints := StrToInt(S);
+        Result := GetPolygonPourPrimitives(ROOT_DIR, NetNames, IncludeContours, MaxPoints);
+    finally
+        NetNames.Free;
+    end;
+end;
+
 // Function to execute a command with parameters
 function ExecuteCommand(CommandName: String): String;
 var
@@ -1401,6 +1421,8 @@ begin
             Result := ExecuteModifyNetClass(RequestData);
         'set_rule_constraint':
             Result := ExecuteSetRuleConstraint(RequestData);
+        'get_polygon_pour_primitives':
+            Result := ExecuteGetPolygonPourPrimitives(RequestData);
         'get_pcb_rules_parsed':
             Result := GetPCBRulesParsed(ROOT_DIR);
         'get_output_job_containers':
