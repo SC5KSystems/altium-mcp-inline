@@ -3679,3 +3679,169 @@ begin
         Entries.Free;
     end;
 end;
+
+{..............................................................................}
+{ get_drc_violations - the board's design rule violations, structured.         }
+{                                                                              }
+{ Altium keeps violation markers on the board: online DRC maintains them as    }
+{ the design is edited, and a batch DRC run rebuilds them. This reads whatever }
+{ is currently there and returns it typed, instead of the descriptor strings   }
+{ the GUI shows.                                                               }
+{                                                                              }
+{ It deliberately does NOT run a batch DRC. Altium's PCB:DesignRuleCheck       }
+{ process opens the modal Design Rule Checker dialog rather than running       }
+{ headlessly, and a tool that blocks on a modal dialog freezes Altium's script }
+{ executor for every other tool - the exact failure this whole bridge is       }
+{ built to avoid. Refreshing is a UI action; reading the result is not.        }
+{                                                                              }
+{ Counts come first because a board in a bad state can carry thousands of      }
+{ violations, and the per-rule tally is usually the answer on its own.         }
+{..............................................................................}
+
+// Net of the primitive a violation points at, or '' when it has none.
+// Silkscreen and board-outline objects legitimately have no net.
+function ViolationPrimNet(Prim: IPCB_Primitive): String;
+begin
+    Result := '';
+    if Prim = nil then Exit;
+    if Prim.Net <> nil then Result := Prim.Net.Name;
+end;
+
+function GetDRCViolations(ROOT_DIR: String; RuleNames: TStringList; MaxViolations: Integer): String;
+var
+    Board       : IPCB_Board;
+    Iterator    : IPCB_BoardIterator;
+    Violation   : IPCB_Primitive;
+    Rule        : IPCB_Rule;
+    Prim        : IPCB_Primitive;
+    Entries     : TStringList;
+    Props       : TStringList;
+    RuleCounts  : TStringList;
+    CountProps  : TStringList;
+    ByRule      : TStringList;
+    Summary     : TStringList;
+    OutputLines : TStringList;
+    Total, Kept, i, gi, KindValue : Integer;
+    RuleName, Existing : String;
+begin
+    Result := '{"success": false, "error": "No PCB document is currently active - open a .PcbDoc and retry"}';
+    Board := GetBoardSafe(0);
+    if Board = nil then Exit;
+
+    if MaxViolations <= 0 then MaxViolations := 200;
+
+    Entries := TStringList.Create;
+    RuleCounts := TStringList.Create;
+    ByRule := TStringList.Create;
+    Summary := TStringList.Create;
+    try
+        Total := 0;
+        Kept := 0;
+
+        Iterator := Board.BoardIterator_Create;
+        Iterator.AddFilter_ObjectSet(MkSet(eViolationObject));
+        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+        Violation := Iterator.FirstPCBObject;
+        while (Violation <> nil) do
+        begin
+            Rule := Violation.Rule;
+            if Rule = nil then
+                RuleName := '(no rule)'
+            else
+                RuleName := Rule.Name;
+
+            // Filter by rule name when the caller asked for specific rules.
+            if (RuleNames = nil) or (RuleNames.Count = 0) or (RuleNames.IndexOf(RuleName) >= 0) then
+            begin
+                Total := Total + 1;
+
+                gi := RuleCounts.IndexOfName(RuleName);
+                if gi < 0 then
+                    RuleCounts.Add(RuleName + '=1')
+                else
+                begin
+                    Existing := RuleCounts.ValueFromIndex[gi];
+                    RuleCounts[gi] := RuleName + '=' + IntToStr(StrToInt(Existing) + 1);
+                end;
+
+                if Kept < MaxViolations then
+                begin
+                    Kept := Kept + 1;
+                    Props := TStringList.Create;
+                    try
+                        AddJSONProperty(Props, 'violation', Violation.Name);
+                        AddJSONProperty(Props, 'rule', RuleName);
+                        if Rule <> nil then
+                        begin
+                            KindValue := Rule.RuleKind;
+                            AddJSONInteger(Props, 'rule_kind', KindValue);
+                            AddJSONProperty(Props, 'rule_kind_name', Rule.GetState_ShortDescriptorString);
+                        end;
+                        AddJSONProperty(Props, 'layer', Board.LayerName(Violation.Layer));
+
+                        // Centre of the violation marker - somewhere to jump to.
+                        AddJSONNumber(Props, 'x',
+                            (CoordToMils(Violation.BoundingRectangle.Left) +
+                             CoordToMils(Violation.BoundingRectangle.Right)) / 2);
+                        AddJSONNumber(Props, 'y',
+                            (CoordToMils(Violation.BoundingRectangle.Bottom) +
+                             CoordToMils(Violation.BoundingRectangle.Top)) / 2);
+
+                        Prim := Violation.Primitive1;
+                        if Prim <> nil then
+                        begin
+                            AddJSONProperty(Props, 'primitive1', Prim.ObjectIDString);
+                            AddJSONProperty(Props, 'primitive1_net', ViolationPrimNet(Prim));
+                        end;
+                        Prim := Violation.Primitive2;
+                        if Prim <> nil then
+                        begin
+                            AddJSONProperty(Props, 'primitive2', Prim.ObjectIDString);
+                            AddJSONProperty(Props, 'primitive2_net', ViolationPrimNet(Prim));
+                        end;
+
+                        AddJSONProperty(Props, 'descriptor', Violation.Descriptor);
+                        Entries.Add(BuildJSONObject(Props));
+                    finally
+                        Props.Free;
+                    end;
+                end;
+            end;
+
+            Violation := Iterator.NextPCBObject;
+        end;
+        Board.BoardIterator_Destroy(Iterator);
+
+        for i := 0 to RuleCounts.Count - 1 do
+        begin
+            CountProps := TStringList.Create;
+            try
+                AddJSONProperty(CountProps, 'rule', RuleCounts.Names[i]);
+                AddJSONInteger(CountProps, 'count', StrToInt(RuleCounts.ValueFromIndex[i]));
+                ByRule.Add(BuildJSONObject(CountProps));
+            finally
+                CountProps.Free;
+            end;
+        end;
+
+        AddJSONInteger(Summary, 'total_violations', Total);
+        AddJSONInteger(Summary, 'returned_violations', Kept);
+        AddJSONBoolean(Summary, 'truncated', Kept < Total);
+        Summary.Add(Trim(BuildJSONArray(ByRule, 'by_rule')));
+        Summary.Add(Trim(BuildJSONArray(Entries, 'violations')));
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONObject(Summary);
+            Result := WriteJSONToFile(OutputLines, ROOT_DIR + '\temp_drc_violations.json');
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        Summary.Free;
+        ByRule.Free;
+        RuleCounts.Free;
+        Entries.Free;
+    end;
+end;

@@ -1106,6 +1106,48 @@ begin
     end;
 end;
 
+function ExecuteGetDRCViolations(RequestData: TStringList): String;
+var
+    RuleNames     : TStringList;
+    i, ValueStart : Integer;
+    MaxViolations : Integer;
+    ParamValue    : String;
+begin
+    RuleNames := TStringList.Create;
+    try
+        RuleNames.CaseSensitive := False;
+        MaxViolations := 200;
+
+        for i := 0 to RequestData.Count - 1 do
+        begin
+            if (Pos('"max_violations"', RequestData[i]) > 0) then
+            begin
+                ValueStart := Pos(':', RequestData[i]) + 1;
+                ParamValue := Copy(RequestData[i], ValueStart, Length(RequestData[i]) - ValueStart + 1);
+                ParamValue := TrimJSON(ParamValue);
+                if ParamValue <> '' then MaxViolations := StrToInt(ParamValue);
+            end
+            else if (Pos('"rule_names"', RequestData[i]) > 0) then
+            begin
+                i := i + 1;
+                while (i < RequestData.Count) and (Pos(']', RequestData[i]) = 0) do
+                begin
+                    ParamValue := RequestData[i];
+                    ParamValue := StringReplace(ParamValue, '"', '', REPLACEALL);
+                    ParamValue := StringReplace(ParamValue, ',', '', REPLACEALL);
+                    ParamValue := Trim(ParamValue);
+                    if (ParamValue <> '') and (ParamValue <> '[') then RuleNames.Add(ParamValue);
+                    i := i + 1;
+                end;
+            end;
+        end;
+
+        Result := GetDRCViolations(ROOT_DIR, RuleNames, MaxViolations);
+    finally
+        RuleNames.Free;
+    end;
+end;
+
 // Function to execute a command with parameters
 function ExecuteCommand(CommandName: String): String;
 var
@@ -1198,6 +1240,8 @@ begin
             Result := ExecuteGetNetGeometrySummary(RequestData);
         'get_object_classes':
             Result := GetObjectClasses(ROOT_DIR);
+        'get_drc_violations':
+            Result := ExecuteGetDRCViolations(RequestData);
         'get_pcb_rules_parsed':
             Result := GetPCBRulesParsed(ROOT_DIR);
         'get_output_job_containers':

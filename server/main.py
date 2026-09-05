@@ -2403,6 +2403,61 @@ async def get_pcb_rules(ctx: Context) -> str:
     return json.dumps(rules_data, indent=2)
 
 @mcp.tool()
+async def get_drc_violations(ctx: Context, rule_names: list = None, max_violations: int = 200) -> str:
+    """
+    Get the current design rule violations on the PCB, structured.
+
+    Altium keeps violation markers on the board - online DRC maintains them as
+    the design is edited, and a batch DRC run rebuilds them. This reads what is
+    currently there and returns it typed: the rule and its kind, the layer, a
+    coordinate to jump to, the two primitives involved and their nets.
+
+    IMPORTANT - this does not run a batch DRC, so the markers are as fresh as
+    the last run. Altium's DesignRuleCheck process opens a modal dialog rather
+    than running headlessly, and a tool that blocked on that dialog would freeze
+    the script executor for every other tool here. To refresh, run
+    Tools > Design Rule Check > Run Design Rule Check in Altium, then call this
+    again.
+
+    Counts come first: total_violations and a by_rule tally are returned before
+    the violation list, because a board in a bad state can carry thousands and
+    the tally is often the whole answer. The list is capped at max_violations
+    and truncated says whether anything was left out.
+
+    Severity is not reported - Altium keeps it in DRC configuration rather than
+    on the violation, so it is not reachable from the violation objects.
+
+    Args:
+        rule_names (list, optional): Only report violations of these rules,
+            e.g. ["Clearance", "Width"]. Omit for all rules.
+        max_violations (int): Cap on violations returned. Default 200. The
+            by_rule tally always covers every match regardless of this cap.
+
+    Returns:
+        str: JSON object with total_violations, returned_violations, truncated,
+             by_rule, and violations. Coordinates are in mils.
+    """
+    logger.info(f"Getting DRC violations (rules={rule_names or 'all'}, max={max_violations})")
+
+    response = await altium_bridge.execute_command(
+        "get_drc_violations",
+        {"rule_names": rule_names or [], "max_violations": max_violations}
+    )
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error getting DRC violations: {error_msg}")
+        return json.dumps({"error": f"Failed to get DRC violations: {error_msg}"})
+
+    result = response.get("result", {})
+    if not result:
+        return json.dumps({"message": "No violation data returned from the current PCB document"})
+
+    logger.info(f"Retrieved {result.get('total_violations', 0)} violation(s)")
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
 async def get_object_classes(ctx: Context) -> str:
     """
     Get every object class defined on the current PCB and its members.
