@@ -21,6 +21,8 @@ import base64
 import glob
 import re
 
+import board_geometry as bg
+
 # Configure logging
 logging.basicConfig(
     level=logging.DEBUG,  # Change to DEBUG for more detailed logs
@@ -46,6 +48,9 @@ EXCHANGE_DIR = Path("C:/Users/Public/altium_mcp")
 EXCHANGE_DIR.mkdir(exist_ok=True)
 REQUEST_FILE = EXCHANGE_DIR / "request.json"
 RESPONSE_FILE = EXCHANGE_DIR / "response.json"
+# Commands that log their progress (the board editing ones) append to this.
+# If Altium never answers, its last line names the step that stalled.
+STEP_FILE = EXCHANGE_DIR / "steps.txt"
 
 # Initialize FastMCP server
 mcp = FastMCP("AltiumMCP", description="Altium integration through the Model Context Protocol")
@@ -243,7 +248,13 @@ class AltiumBridge:
             # Clean up any existing response file
             if RESPONSE_FILE.exists():
                 RESPONSE_FILE.unlink()
-            
+            # A step log left by an earlier command would blame the wrong step.
+            # Best effort: a script still holding it open must not stop this one.
+            try:
+                STEP_FILE.unlink()
+            except OSError:
+                pass
+
             # Write the request file with command and parameters
             with open(REQUEST_FILE, "w") as f:
                 json.dump({
@@ -267,7 +278,7 @@ class AltiumBridge:
             
             if not RESPONSE_FILE.exists():
                 logger.error("Timeout waiting for response from Altium")
-                return {"success": False, "error": "No response received from Altium (timeout)"}
+                return {"success": False, "error": self._timeout_message()}
             
             # Read the response file and print it for debugging
             logger.info("Response file found, reading response")
@@ -318,7 +329,31 @@ class AltiumBridge:
         except Exception as e:
             logger.error(f"Error executing command: {e}")
             return {"success": False, "error": str(e)}
-    
+
+    def _timeout_message(self) -> str:
+        """Explain a missing response, naming the last logged step if there is one.
+
+        A runtime error leaves Altium's script paused in its debugger with no
+        dialog, and every later script then silently does nothing, so a timeout
+        usually means the engine is stalled rather than slow.
+        """
+        stop = f'"{self.config.altium_exe_path}" -REditScript:Stop'
+        steps = []
+        try:
+            if STEP_FILE.exists():
+                steps = [s for s in STEP_FILE.read_text(encoding="cp1252", errors="replace")
+                         .splitlines() if s.strip()]
+        except OSError:
+            pass
+        if steps:
+            return ("No response received from Altium (timeout). The script logged progress but "
+                    f"never answered; the last step it logged was: {steps[-1]!r}. The statement "
+                    "after that step is the likely failure. Altium's script engine is probably "
+                    f"stalled now: run {stop} (or restart Altium) before the next call.")
+        return ("No response received from Altium (timeout). If an earlier script failed, "
+                "Altium's script engine is stalled and every call times out like this until "
+                f"you run {stop} or restart Altium.")
+
     @staticmethod
     def _resolve_msix_path(virtual_path: str) -> str:
         """Resolve an MSIX-virtualized path to the real filesystem path.
@@ -3070,6 +3105,540 @@ async def get_vias(ctx: Context, net_names: list = None) -> str:
 
     logger.info(f"Retrieved {len(vias)} via(s)")
     return json.dumps(vias, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Board editing: the outline, the origin, and free primitives.
+#
+# Geometry is validated here (board_geometry.py, unit tested offline) and
+# handed to Altium as plain spec files, so the DelphiScript side only applies
+# numbers. Coordinates are relative to the board origin, like the placement
+# tools. Every write reports the board it changed, and takes expected_board so
+# a caller can refuse to touch any other.
+# ---------------------------------------------------------------------------
+
+BOARD_OUTLINE_SPEC = EXCHANGE_DIR / "board_outline_spec.txt"
+BOARD_PRIMITIVES_SPEC = EXCHANGE_DIR / "board_primitives_spec.txt"
+_REGION_KIND_NAMES = {v: k for k, v in bg.REGION_KINDS.items()}
+
+
+def _write_board_spec(path: Path, lines: list):
+    # cp1252: the bridge reads spec files as ANSI, as build_schematic's are
+    path.write_text("\n".join(lines) + "\n", encoding="cp1252", errors="replace")
+
+
+def _board_result(response: dict):
+    """The command's JSON object from a bridge response, or None."""
+    result = response.get("result", {})
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except ValueError:
+            return None
+    return result if isinstance(result, dict) else None
+
+
+def _scaled_segment(seg: dict, scale: float) -> dict:
+    out = {"kind": seg["kind"], "x": seg["x"] * scale, "y": seg["y"] * scale}
+    if seg["kind"] == "arc":
+        out.update(cx=seg["cx"] * scale, cy=seg["cy"] * scale, radius=seg["radius"] * scale,
+                   start_angle=seg["start_angle"], end_angle=seg["end_angle"])
+    return out
+
+
+def _outline_block(raw: dict, key: str, units: str):
+    """(segments in mils, report block in the caller's units) for one outline."""
+    segments = bg.segments_from_altium(raw.get(key) or [])
+    block = {"point_count": raw.get(f"{key}_point_count", len(segments))}
+    if not segments:
+        block["note"] = "Altium reported no outline segments"
+        return segments, block
+    scale = bg.from_mils(1.0, units)
+    block["summary"] = bg.describe_outline(segments, units)
+    block["altium_bbox"] = {side: raw.get(f"{key}_bbox_{side}", 0) * scale
+                            for side in ("left", "bottom", "right", "top")}
+    block["vertices"] = bg.restorable_vertices(segments, units)
+    block["segments"] = [_scaled_segment(s, scale) for s in segments]
+    return segments, block
+
+
+def _classify_components(raw: dict, segments: list):
+    comps = raw.get("components")
+    if comps is None or not segments:
+        return None
+    polyline = bg.outline_polyline(segments)
+    groups = {"inside": [], "crossing": [], "outside": []}
+    for comp in comps:
+        try:
+            box = (float(comp["left"]), float(comp["bottom"]),
+                   float(comp["right"]), float(comp["top"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        groups[bg.classify_box(box, polyline)].append(comp.get("designator", "?"))
+    return {
+        "method": "each component's bounding box (designator and comment excluded) "
+                  "against the outline",
+        "inside_count": len(groups["inside"]),
+        "crossing_edge": groups["crossing"],
+        "outside": groups["outside"],
+    }
+
+
+def _region_list(raw: dict, units: str) -> list:
+    scale = bg.from_mils(1.0, units)
+    regions = []
+    for r in raw.get("non_copper_regions") or []:
+        kind = r.get("kind")
+        regions.append({
+            "kind": kind,
+            "kind_name": _REGION_KIND_NAMES.get(kind, "other"),
+            "layer": r.get("layer"),
+            "bbox": {side: r.get(f"bbox_{side}", 0) * scale
+                     for side in ("left", "bottom", "right", "top")},
+            "vertex_count": r.get("vertex_count"),
+            "vertices": [{"x": v.get("x", 0) * scale, "y": v.get("y", 0) * scale}
+                         for v in r.get("vertices") or []],
+        })
+    return regions
+
+
+@mcp.tool()
+async def get_board_outline(ctx: Context, units: str = "mil", check_components: bool = False) -> str:
+    """
+    Get the board shape: its outline, exact size, area and origin, plus any
+    board cutouts and other non-copper regions.
+
+    Coordinates are relative to the board origin, like the placement tools.
+    The outline comes back two ways: "segments" as Altium stores them (arcs with
+    centre, radius and angles), and "vertices", the exact form set_board_outline
+    accepts, so a shape can be saved and put back unchanged.
+
+    Args:
+        units (str): "mil" (default) or "mm" for every length in the result.
+        check_components (bool): Also sort every component into inside, crossing
+            the edge, or outside the outline, by its bounding box (designator
+            and comment text excluded).
+
+    Returns:
+        str: JSON with board_file, origin_absolute_mils, outline (summary with
+             width, height, bbox, area, perimeter and orientation; vertices;
+             segments; Altium's own bbox as a cross-check), non_copper_regions
+             (board cutouts and polygon cutouts with Altium's kind number) and,
+             when asked, components.
+    """
+    try:
+        units = bg.normalize_units(units)
+    except bg.GeometryError as e:
+        return json.dumps({"success": False, "error": str(e)})
+    logger.info(f"Getting board outline (units={units}, components={check_components})")
+
+    response = await altium_bridge.execute_command(
+        "get_board_outline", {"include_components": bool(check_components)})
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error getting board outline: {error_msg}")
+        return json.dumps({"success": False, "error": f"Failed to get board outline: {error_msg}"})
+    raw = _board_result(response)
+    if raw is None:
+        return json.dumps({"success": False, "error": "Altium's reply could not be read"})
+
+    segments, block = _outline_block(raw, "outline", units)
+    result = {
+        "success": True,
+        "board_file": raw.get("board_file"),
+        "units": units,
+        "coordinates": f"{units}, relative to the board origin",
+        "origin_absolute_mils": {"x": raw.get("origin_x_absolute_mils"),
+                                 "y": raw.get("origin_y_absolute_mils")},
+        "outline": block,
+        "outline_rebuilt_before_read": raw.get("outline_rebuilt_before_read", False),
+        "non_copper_regions": _region_list(raw, units),
+        "region_kind_note": "Kind numbers are Altium's (0 copper, 1 polygon cutout, 3 board "
+                            "cutout in current releases).",
+    }
+    if check_components:
+        result["components"] = _classify_components(raw, segments)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def set_board_outline(ctx: Context, units: str, width: float = None, height: float = None,
+                            x: float = 0, y: float = 0, corner_radius: float = 0,
+                            vertices: list = None, expected_board: str = "") -> str:
+    """
+    Set the board shape to exact dimensions. MODIFIES THE DESIGN.
+
+    Either a rectangle (width and height, optional corner_radius, lower-left
+    corner at x, y) or a free shape (vertices). Coordinates are relative to the
+    board origin; move the origin afterwards with set_board_origin if wanted.
+    The new outline is read back from Altium and compared with the request
+    (tolerance 0.01 mil; Altium stores 0.0001 mil), so "verified": true means
+    Altium holds exactly what was asked for.
+
+    Not done here: polygons are not repoured (Tools > Polygon Pours > Repour
+    All in Altium), and DRC is not run. Nothing is saved to disk until the
+    board is saved. To go back, pass previous_outline.vertices from the result
+    to this tool again.
+
+    Args:
+        units (str): Required. "mm" or "mil" - applies to every length here.
+        width, height (float): Rectangle size.
+        x, y (float): Rectangle's lower-left corner. Default 0, 0 (the origin).
+        corner_radius (float): Round every corner. Half the shorter side gives
+            a stadium; half of a square's side gives a circle.
+        vertices (list): Free shape instead of a rectangle, counterclockwise:
+            [{"x": 0, "y": 0}, {"x": 60, "y": 0}, ...]. Put
+            "arc": {"cx": .., "cy": ..} on a vertex to make the edge from it to
+            the next vertex a counterclockwise arc about that centre (both
+            vertices must lie on the circle). A straight-edged shape given
+            clockwise is reversed automatically.
+        expected_board (str): Optional. Refuse unless the active board's file
+            name contains this text, e.g. "mcp_scratch".
+
+    Returns:
+        str: JSON with verified, requested and actual outline summaries, the
+             verification report, previous_outline (with restorable vertices),
+             and components that are now crossing the edge or outside.
+    """
+    try:
+        units = bg.normalize_units(units)
+        if vertices is not None:
+            if width is not None or height is not None:
+                raise bg.GeometryError("give either width and height, or vertices - not both")
+            segments = bg.outline_from_vertices(vertices, units)
+        else:
+            if width is None or height is None:
+                raise bg.GeometryError("give width and height for a rectangle, or a vertices list")
+            segments = bg.rectangle_outline(
+                bg.to_mils(width, units, "width"), bg.to_mils(height, units, "height"),
+                bg.to_mils(x, units, "x"), bg.to_mils(y, units, "y"),
+                bg.to_mils(corner_radius, units, "corner_radius"))
+    except bg.GeometryError as e:
+        return json.dumps({"success": False, "error": f"Nothing was changed: {e}"})
+
+    logger.info(f"Setting board outline: {len(segments)} segments")
+    _write_board_spec(BOARD_OUTLINE_SPEC, bg.outline_spec_lines(segments))
+    response = await altium_bridge.execute_command(
+        "set_board_outline", {"expected_board": str(expected_board or "")})
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error setting board outline: {error_msg}")
+        return json.dumps({"success": False, "error": f"Failed to set board outline: {error_msg}"})
+    raw = _board_result(response)
+    if raw is None:
+        return json.dumps({"success": False,
+                           "error": "Altium's reply could not be read. The outline may have "
+                                    "changed; check it with get_board_outline."})
+
+    actual, actual_block = _outline_block(raw, "outline", units)
+    _, previous_block = _outline_block(raw, "previous", units)
+    verification = bg.compare_outlines(segments, actual)
+    result = {
+        "success": True,
+        "verified": bool(verification.get("match")),
+        "board_file": raw.get("board_file"),
+        "units": units,
+        "requested": bg.describe_outline(segments, units),
+        "outline": actual_block,
+        "verification_mils": verification,
+        "previous_outline": previous_block,
+        "components": _classify_components(raw, actual or segments),
+        "next_steps": [
+            "Repour polygons in Altium (Tools > Polygon Pours > Repour All); this tool "
+            "does not repour them.",
+            "Run DRC in Altium to refresh board-edge clearance markers, then read them "
+            "with get_drc_violations.",
+            "To revert, call set_board_outline with previous_outline.vertices.",
+        ],
+    }
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def set_board_origin(ctx: Context, position: str = "lower_left", x: float = None,
+                           y: float = None, units: str = "mil", expected_board: str = "") -> str:
+    """
+    Move the board origin - the 0,0 that every coordinate in these tools is
+    measured from. MODIFIES THE DESIGN (nothing on the board moves; only the
+    reference point does).
+
+    Args:
+        position (str): "lower_left" puts the origin at the lower-left corner
+            of the board outline's bounding box; "center" at its centre;
+            "point" at x, y measured from the CURRENT origin.
+        x, y (float): Only for position "point".
+        units (str): "mil" (default) or "mm" for x, y and moved_by.
+        expected_board (str): Optional. Refuse unless the active board's file
+            name contains this text.
+
+    Returns:
+        str: JSON with the old and new origin (absolute mils), moved_by, and
+             verified (the origin reads back where it was asked to go).
+             Coordinates read before this call convert as new = old - moved_by.
+    """
+    try:
+        units = bg.normalize_units(units)
+        pos = str(position or "").strip().lower().replace("-", "_").replace(" ", "_")
+        pos = {"bottom_left": "lower_left", "lowerleft": "lower_left",
+               "centre": "center"}.get(pos, pos)
+        if pos not in ("lower_left", "center", "point"):
+            raise bg.GeometryError("position must be 'lower_left', 'center' or 'point'")
+        params = {"position": pos, "expected_board": str(expected_board or "")}
+        if pos == "point":
+            if x is None or y is None:
+                raise bg.GeometryError("position 'point' needs x and y, measured from the "
+                                       "current origin")
+            params["x_mils"] = bg.to_mils(x, units, "x")
+            params["y_mils"] = bg.to_mils(y, units, "y")
+    except bg.GeometryError as e:
+        return json.dumps({"success": False, "error": f"Nothing was changed: {e}"})
+
+    logger.info(f"Setting board origin: {params}")
+    response = await altium_bridge.execute_command("set_board_origin", params)
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error setting board origin: {error_msg}")
+        return json.dumps({"success": False, "error": f"Failed to set board origin: {error_msg}"})
+    raw = _board_result(response)
+    if raw is None:
+        return json.dumps({"success": False,
+                           "error": "Altium's reply could not be read. The origin may have "
+                                    "moved; check it with get_board_outline."})
+
+    scale = bg.from_mils(1.0, units)
+    try:
+        requested = (float(raw["requested_origin_x_absolute_mils"]),
+                     float(raw["requested_origin_y_absolute_mils"]))
+        actual = (float(raw["origin_x_absolute_mils"]), float(raw["origin_y_absolute_mils"]))
+        verified = max(abs(a - r) for a, r in zip(actual, requested)) <= bg.DEFAULT_TOLERANCE_MILS
+    except (KeyError, TypeError, ValueError):
+        verified = False
+    result = {
+        "success": True,
+        "verified": verified,
+        "board_file": raw.get("board_file"),
+        "position": raw.get("position"),
+        "old_origin_absolute_mils": {"x": raw.get("old_origin_x_absolute_mils"),
+                                     "y": raw.get("old_origin_y_absolute_mils")},
+        "origin_absolute_mils": {"x": raw.get("origin_x_absolute_mils"),
+                                 "y": raw.get("origin_y_absolute_mils")},
+        "moved_by": {"x": (raw.get("moved_by_x_mils") or 0) * scale,
+                     "y": (raw.get("moved_by_y_mils") or 0) * scale, "units": units},
+        "note": "Nothing on the board moved. Coordinates read before this call convert as "
+                "new = old - moved_by.",
+    }
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def create_pcb_primitives(ctx: Context, primitives: list, units: str,
+                                expected_board: str = "") -> str:
+    """
+    Add free objects to the board in one undo step. MODIFIES THE DESIGN.
+
+    Coordinates are relative to the board origin. The whole batch is checked
+    first - every field, layer and net - and nothing is created unless all of
+    it can be. Layers: "Top Layer", "Bottom Layer", "Mechanical 1",
+    "Top Overlay", "Keep Out Layer", "Multi Layer", or any copper or mechanical
+    layer's name as shown in Altium ("top", "mech1", "top silk" also work).
+    "net" is optional everywhere it appears and must already exist on the board.
+
+    One dict per object, by "type":
+      track:   layer, x1, y1, x2, y2, width, net
+      arc:     layer, cx, cy, radius, start_angle, end_angle (degrees,
+               counterclockwise; 0 to 360 is a full circle), width, net
+      via:     x, y, diameter, hole, low_layer ("Top Layer"),
+               high_layer ("Bottom Layer"), net
+      fill:    layer, x1, y1, x2, y2, rotation (0), net
+      region:  points [{x, y}, ...] (straight edges), kind ("copper",
+               "polygon_cutout" or "board_cutout"; a number passes through),
+               layer (board cutouts default to "Multi Layer"), net (copper only)
+      pad:     free pad for mounting holes and fiducials: x, y, size (or
+               size_x and size_y), hole (0 = SMD), shape ("round", "rect",
+               "rounded_rect"), plated (default true when drilled), layer
+               ("Multi Layer" when drilled, else "Top Layer"/"Bottom Layer"),
+               rotation, name, net
+      text:    text, x, y, height, stroke_width (height/6), layer
+               ("Top Overlay"), rotation, mirror (default on for bottom layers)
+      polygon: points [{x, y}, ...] (straight edges), layer, net, pour (false).
+               Unpoured polygons need Tools > Polygon Pours > Repour All.
+
+    Keepouts: draw tracks, arcs, fills or regions on "Keep Out Layer".
+
+    Args:
+        primitives (list): Objects as above, up to 2000 per call.
+        units (str): Required. "mm" or "mil" for every length.
+        expected_board (str): Optional. Refuse unless the active board's file
+            name contains this text.
+
+    Returns:
+        str: JSON with counts requested and created per type, and verified
+             (every requested object was created).
+    """
+    try:
+        lines, counts = bg.primitive_spec_lines(primitives, units)
+    except bg.GeometryError as e:
+        return json.dumps({"success": False, "error": f"Nothing was created: {e}"})
+
+    logger.info(f"Creating PCB primitives: {counts}")
+    _write_board_spec(BOARD_PRIMITIVES_SPEC, lines)
+    response = await altium_bridge.execute_command(
+        "create_pcb_primitives", {"expected_board": str(expected_board or "")})
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error creating PCB primitives: {error_msg}")
+        return json.dumps({"success": False, "error": f"Failed to create primitives: {error_msg}"})
+    raw = _board_result(response)
+    if raw is None:
+        return json.dumps({"success": False,
+                           "error": "Altium's reply could not be read. Some objects may have "
+                                    "been created; check the board before retrying."})
+
+    created = {kind: raw.get(kind + "s", 0) for kind in bg.PRIMITIVE_TYPES}
+    result = {
+        "success": True,
+        "verified": all(created.get(k, 0) == n for k, n in counts.items()),
+        "board_file": raw.get("board_file"),
+        "requested": counts,
+        "created": created,
+        "total_created": raw.get("created"),
+        "polygons_poured": raw.get("polygons_poured", 0),
+    }
+    unpoured = created.get("polygon", 0) - (raw.get("polygons_poured") or 0)
+    if unpoured > 0:
+        result["next_steps"] = [f"{unpoured} polygon(s) were added unpoured: run Tools > "
+                                "Polygon Pours > Repour All in Altium."]
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def delete_pcb_primitives(ctx: Context, object_types: list, layer: str = None,
+                                net_names: list = None, within: dict = None,
+                                selected_only: bool = False, dry_run: bool = True,
+                                max_objects: int = 500, units: str = "mil",
+                                expected_board: str = "") -> str:
+    """
+    Find, and optionally delete, free objects on the board. MODIFIES THE
+    DESIGN when dry_run is false.
+
+    Runs as a dry run by default: it lists what matches and changes nothing.
+    Call again with dry_run=false to delete exactly that set, as one undo step.
+    Deletion is refused when more than max_objects match. At least one filter
+    besides object_types is required; filters combine (all must match).
+
+    Never touched: anything inside a component (its pads, silkscreen,
+    designator), copper a polygon poured, and the parts of a dimension.
+
+    Args:
+        object_types (list): Any of "track", "arc", "via", "fill", "region",
+            "pad" (free pads only), "text" (free text only), "polygon" (the
+            whole pour).
+        layer (str): Only objects on this layer. Vias match on their start or
+            end layer.
+        net_names (list): Only objects on these nets (text never matches).
+        within (dict): {"x1", "y1", "x2", "y2"} - only objects whose bounding
+            box lies entirely inside this rectangle, relative to the origin.
+        selected_only (bool): Only objects currently selected in Altium.
+        dry_run (bool): Default true. False deletes the matches.
+        max_objects (int): Refuse to delete if more than this many match.
+        units (str): "mil" (default) or "mm" for within and the listing.
+        expected_board (str): Optional. Refuse unless the active board's file
+            name contains this text.
+
+    Returns:
+        str: JSON with matched, deleted, over_limit, and the matching objects
+             (type, layer, net, bounding box; first 200 listed).
+    """
+    try:
+        units = bg.normalize_units(units)
+        if not isinstance(object_types, list) or not object_types:
+            raise bg.GeometryError("object_types must list at least one of "
+                                   + ", ".join(bg.PRIMITIVE_TYPES))
+        types = []
+        for t in object_types:
+            name = str(t).strip().lower()
+            if name not in bg.PRIMITIVE_TYPES and name.endswith("s") and \
+                    name[:-1] in bg.PRIMITIVE_TYPES:
+                name = name[:-1]
+            if name not in bg.PRIMITIVE_TYPES:
+                raise bg.GeometryError(f"unknown object type {t!r}; use "
+                                       + ", ".join(bg.PRIMITIVE_TYPES))
+            if name not in types:
+                types.append(name)
+        layer_name = ""
+        if layer:
+            layer_name = bg.normalize_layer(layer, "layer")
+            if "," in layer_name or '"' in layer_name:
+                raise bg.GeometryError("layer must not contain commas or quotes")
+        nets = []
+        for n in net_names or []:
+            text = str(n).strip()
+            if not text or any(c in text for c in ',"|\r\n'):
+                raise bg.GeometryError(f"net name {n!r} is empty or contains a comma, quote "
+                                       "or '|'")
+            nets.append(text)
+        max_objects = int(max_objects)
+        if not 1 <= max_objects <= 5000:
+            raise bg.GeometryError("max_objects must be between 1 and 5000")
+        params = {
+            "object_types": types,
+            "layer_name": layer_name,
+            "net_names": nets,
+            "selected_only": bool(selected_only),
+            "dry_run": bool(dry_run),
+            "max_objects": max_objects,
+            "expected_board": str(expected_board or ""),
+            "has_within": within is not None,
+        }
+        if within is not None:
+            if not isinstance(within, dict) or any(k not in within for k in ("x1", "y1", "x2", "y2")):
+                raise bg.GeometryError("within must be an object with x1, y1, x2 and y2")
+            for key in ("x1", "y1", "x2", "y2"):
+                params[f"within_{key}"] = bg.to_mils(within[key], units, f"within.{key}")
+        if not (layer_name or nets or within is not None or selected_only):
+            raise bg.GeometryError("give at least one filter: layer, net_names, within or "
+                                   "selected_only")
+    except (bg.GeometryError, TypeError, ValueError) as e:
+        return json.dumps({"success": False, "error": f"Nothing was changed: {e}"})
+
+    logger.info(f"delete_pcb_primitives (dry_run={bool(dry_run)}): {params}")
+    response = await altium_bridge.execute_command("delete_pcb_primitives", params)
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error deleting PCB primitives: {error_msg}")
+        return json.dumps({"success": False, "error": f"Failed to delete primitives: {error_msg}"})
+    raw = _board_result(response)
+    if raw is None:
+        return json.dumps({"success": False,
+                           "error": "Altium's reply could not be read. If dry_run was false, "
+                                    "check the board before retrying."})
+
+    scale = bg.from_mils(1.0, units)
+    objects = []
+    for obj in raw.get("objects") or []:
+        entry = {k: obj.get(k) for k in ("type", "layer", "net")}
+        entry["bbox"] = {side: (obj.get(side) or 0) * scale
+                         for side in ("left", "bottom", "right", "top")}
+        objects.append(entry)
+    matched = raw.get("matched", 0)
+    result = {
+        "success": True,
+        "board_file": raw.get("board_file"),
+        "dry_run": raw.get("dry_run", True),
+        "matched": matched,
+        "deleted": raw.get("deleted", 0),
+        "over_limit": raw.get("over_limit", False),
+        "listing_truncated": raw.get("listing_truncated", False),
+        "units": units,
+        "objects": objects,
+    }
+    if result["dry_run"]:
+        result["note"] = ("Dry run: nothing was deleted. Call again with the same filters and "
+                          "dry_run=false to delete these objects.")
+    elif result["over_limit"]:
+        result["note"] = (f"Nothing was deleted: {matched} objects matched, more than "
+                          f"max_objects={max_objects}. Narrow the filters or raise max_objects.")
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()

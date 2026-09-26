@@ -182,6 +182,14 @@ The server provides several tools to interact with Altium Designer:
 The cool thing about layout duplication this way as opposed to with Altium's built in layout replication, is that the exact components don't have to match because the LLM can look through the descriptions and understand which components match and which don't have a match. That's something that can't really be hard coded.
 ![Placement Duplicator](assets/placement_duplicator.gif)
 
+### Board Editing
+These use coordinates relative to the board origin, like the placement tools, in mm or mils. Every write reports the board it changed, and takes an optional `expected_board` so it refuses to touch any board whose file name does not contain that text. Live testing is still in progress. See [`dev/BOARD_EDITING_TEST_PLAN.md`](dev/BOARD_EDITING_TEST_PLAN.md).
+- `get_board_outline`: The board shape: outline segments, exact width, height, area and origin, board cutouts, and optionally which components sit inside, across the edge, or outside.
+- `set_board_outline`: Set the board shape to exact dimensions. Takes a rectangle (optional corner radius), or free vertices with optional arcs. Altium's copy is read back and compared with the request, and the previous outline is returned in a form that can be passed straight back to restore it. Polygons are not repoured automatically.
+- `set_board_origin`: Move the origin to the board's lower-left corner, its centre, or an offset. Nothing on the board moves.
+- `create_pcb_primitives`: Add tracks, arcs, vias, fills, regions (copper, polygon cutouts, board cutouts), free pads (mounting holes, fiducials), text and polygons in one undo step. Keepouts are objects on the Keep Out Layer. The whole batch is checked first, and nothing is created unless every layer and net resolves.
+- `delete_pcb_primitives`: Find free objects by type, layer, net, rectangle or selection. It is a dry run unless `dry_run` is false. It never touches component, polygon-pour or dimension internals.
+
 ### PCB Footprint Library
 - `create_pcb_footprint`: Create a new PCB footprint in the currently active .PcbLib document. Supports SMD pads (Rect, Round, Oval shapes) defined in mm relative to the component origin. Auto-generates a courtyard on Mech 15 and silkscreen with a pin 1 indicator (gap in the top-left corner), or accepts explicit courtyard dimensions. Contributed by [coffeedust](https://github.com/coffeedust) ([PR #7](https://github.com/coffeenmusic/altium-mcp/pull/7)).
 - `get_footprint_primitives`: Inventory a .PcbLib (per-footprint primitive counts) or dump complete footprint geometry - pads with full stack/hole detail, tracks, arcs, fills, texts, regions - in mils. The reference source when recreating or verifying footprints. 3D bodies are excluded as models.
@@ -241,6 +249,9 @@ This is a third-party integration and not made by Altium. Made by [coffeenmusic]
 - Change Schematic Selection Filter: SelectionFilter.pas
 - Place schematic objects (place component from library): PlaceSchObjects.pas
 - How can I read through components from libraries in Components panel?
+
+Offline tests (no Altium needed) for the board editing geometry:
+`python -m unittest discover -s server/tests -p "test_board_geometry.py"`
 
 TODO Tests:
 Need to add the following test units

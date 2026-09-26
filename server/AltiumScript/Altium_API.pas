@@ -1360,6 +1360,83 @@ begin
     Result := SelectObjectsAt(ROOT_DIR, X, Y, Radius, MaxHits);
 end;
 
+// Board editing (pcb_board_edit.pas). Geometry arrives as spec files written
+// by the Python side; only small scalars travel in the request itself.
+function ExecuteGetBoardOutline(RequestData: TStringList): String;
+begin
+    Result := GetBoardOutlineData(ROOT_DIR,
+        Pos('true', LowerCase(ExtractScalarParam(RequestData, 'include_components'))) > 0);
+end;
+
+function ExecuteSetBoardOutline(RequestData: TStringList): String;
+begin
+    Result := SetBoardOutline(ROOT_DIR, ROOT_DIR + 'board_outline_spec.txt',
+                              ExtractScalarParam(RequestData, 'expected_board'));
+end;
+
+function ExecuteSetBoardOrigin(RequestData: TStringList): String;
+var
+    X, Y : Double;
+    S    : String;
+begin
+    X := 0;
+    Y := 0;
+    S := ExtractScalarParam(RequestData, 'x_mils');
+    if S <> '' then X := SafeStrToFloat(S);
+    S := ExtractScalarParam(RequestData, 'y_mils');
+    if S <> '' then Y := SafeStrToFloat(S);
+    Result := SetBoardOriginTo(ROOT_DIR, ExtractScalarParam(RequestData, 'position'), X, Y,
+                               ExtractScalarParam(RequestData, 'expected_board'));
+end;
+
+function ExecuteCreatePcbPrimitives(RequestData: TStringList): String;
+begin
+    Result := CreateBoardPrimitives(ROOT_DIR, ROOT_DIR + 'board_primitives_spec.txt',
+                                    ExtractScalarParam(RequestData, 'expected_board'));
+end;
+
+function ExecuteDeletePcbPrimitives(RequestData: TStringList): String;
+var
+    TypeNames, Nets        : TStringList;
+    HasWithin          : Boolean;
+    SelectedOnly       : Boolean;
+    DryRun             : Boolean;
+    WX1, WY1, WX2, WY2 : Double;
+    MaxObjects         : Integer;
+    S                  : String;
+begin
+    TypeNames := TStringList.Create;
+    Nets := TStringList.Create;
+    try
+        Nets.CaseSensitive := False;
+        ParseJSONStringArray(RequestData, 'object_types', TypeNames);
+        ParseJSONStringArray(RequestData, 'net_names', Nets);
+        HasWithin := Pos('true', LowerCase(ExtractScalarParam(RequestData, 'has_within'))) > 0;
+        WX1 := 0;
+        WY1 := 0;
+        WX2 := 0;
+        WY2 := 0;
+        if HasWithin then
+        begin
+            WX1 := SafeStrToFloat(ExtractScalarParam(RequestData, 'within_x1'));
+            WY1 := SafeStrToFloat(ExtractScalarParam(RequestData, 'within_y1'));
+            WX2 := SafeStrToFloat(ExtractScalarParam(RequestData, 'within_x2'));
+            WY2 := SafeStrToFloat(ExtractScalarParam(RequestData, 'within_y2'));
+        end;
+        SelectedOnly := Pos('true', LowerCase(ExtractScalarParam(RequestData, 'selected_only'))) > 0;
+        // Anything short of an explicit false is a dry run.
+        DryRun := Pos('false', LowerCase(ExtractScalarParam(RequestData, 'dry_run'))) = 0;
+        S := ExtractScalarParam(RequestData, 'max_objects');
+        if S = '' then MaxObjects := 500 else MaxObjects := StrToInt(S);
+        Result := DeleteBoardPrimitives(ROOT_DIR, TypeNames, ExtractScalarParam(RequestData, 'layer_name'),
+                                        Nets, HasWithin, WX1, WY1, WX2, WY2, SelectedOnly, DryRun,
+                                        MaxObjects, ExtractScalarParam(RequestData, 'expected_board'));
+    finally
+        Nets.Free;
+        TypeNames.Free;
+    end;
+end;
+
 // Function to execute a command with parameters
 function ExecuteCommand(CommandName: String): String;
 var
@@ -1472,6 +1549,16 @@ begin
             Result := ExecuteSelectObjectsAt(RequestData);
         'get_pcb_rules_parsed':
             Result := GetPCBRulesParsed(ROOT_DIR);
+        'get_board_outline':
+            Result := ExecuteGetBoardOutline(RequestData);
+        'set_board_outline':
+            Result := ExecuteSetBoardOutline(RequestData);
+        'set_board_origin':
+            Result := ExecuteSetBoardOrigin(RequestData);
+        'create_pcb_primitives':
+            Result := ExecuteCreatePcbPrimitives(RequestData);
+        'delete_pcb_primitives':
+            Result := ExecuteDeletePcbPrimitives(RequestData);
         'get_output_job_containers':
             Result := ExecuteGetOutputJobContainers(RequestData);
         'run_output_jobs':
