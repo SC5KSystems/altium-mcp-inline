@@ -140,7 +140,8 @@ python dev/sandbox_runner.py my_experiment.pas [timeout] [--auto-restart]
 
 Experiment body rules: assign findings to `ResultText`; Pascal has no inline
 declarations, so reuse the scratch variables declared in `Sandbox.pas`
-(`S1..S5`, `I1..I5`, `B1`, `Obj1..Obj7`, `List1`, `List2`, `IntMan`, `DbDoc`)
+(`S1..S5`, `I1..I5`, `B1`, `Obj1..Obj7`, `List1`, `List2`, `IntMan`, `DbDoc`;
+`List1` and `List2` are declared but not created - `TStringList.Create` them first)
 or add more there.
 
 **These shared scratch variables are a hazard**, not a convenience. Reusing

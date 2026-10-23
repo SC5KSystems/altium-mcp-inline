@@ -747,7 +747,7 @@ begin
                 AddJSONProperty(LayerProps, 'layer_id', Layer2String(LayerObject.LayerID));
                 AddJSONProperty(LayerProps, 'material_type', 'Copper');
                 AddJSONNumber(LayerProps, 'copper_thickness_mils', LayerObject.CopperThickness / 10000);
-                AddJSONNumber(LayerProps, 'copper_thickness_um', LayerObject.CopperThickness / 254);
+                AddJSONNumber(LayerProps, 'copper_thickness_um', LayerObject.CopperThickness / 10000 * 25.4);   // coord = 1/10000 mil; 1 mil = 25.4 um
                 
                 // Add copper thickness to total
                 TotalThickness := TotalThickness + (LayerObject.CopperThickness / 10000);
@@ -765,7 +765,7 @@ begin
                     
                     AddJSONProperty(LayerProps, 'dielectric_material', LayerObject.Dielectric.DielectricMaterial);
                     AddJSONNumber(LayerProps, 'dielectric_height_mils', LayerObject.Dielectric.DielectricHeight / 10000);
-                    AddJSONNumber(LayerProps, 'dielectric_height_um', LayerObject.Dielectric.DielectricHeight / 254);
+                    AddJSONNumber(LayerProps, 'dielectric_height_um', LayerObject.Dielectric.DielectricHeight / 10000 * 25.4);
                     AddJSONNumber(LayerProps, 'dielectric_constant', LayerObject.Dielectric.DielectricConstant);
                     
                     // Add dielectric thickness to total
@@ -3046,7 +3046,9 @@ begin
                     AddJSONProperty(Props, 'layer', Board.LayerName(Poly.Layer));
                     AddJSONInteger(Props, 'vertex_count', Poly.PointCount);
                     AddJSONInteger(Props, 'hatch_style', Poly.PolyHatchStyle);
-                    AddJSONBoolean(Props, 'pour_over', Poly.PourOver);
+                    // PourOver is an integer enum, not a Boolean: a Boolean emitter prints false for every value.
+                    // Seen live: 1 where the saved polygon has POUROVER=TRUE, 2 where it has POUROVER=FALSE.
+                    AddJSONInteger(Props, 'pour_over_style', Poly.PourOver);
                     AddJSONBoolean(Props, 'remove_dead_copper', Poly.RemoveDead);
                     AddJSONBoolean(Props, 'remove_narrow_necks', Poly.RemoveNarrowNecks);
                     AddJSONNumber(Props, 'neck_threshold_mils', CoordToMils(Poly.NeckWidthThreshold));
