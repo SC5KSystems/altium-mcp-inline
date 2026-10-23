@@ -229,6 +229,7 @@ class Project:
         cp.read_string(self.path.read_text(encoding="utf-8-sig", errors="replace"))   # Altium writes a BOM
         self.sheet_paths = []
         self.pcb_paths = []
+        self.footprint_lib_paths = []      # project .PcbLib files, searched for local footprints
         for sec in sorted((s for s in cp.sections() if re.fullmatch(r"Document\d+", s)),
                           key=lambda s: int(s[8:])):
             doc = cp[sec].get("DocumentPath", "")
@@ -237,6 +238,8 @@ class Project:
                 self.sheet_paths.append(full)
             elif doc.lower().endswith(".pcbdoc"):
                 self.pcb_paths.append(full)
+            elif doc.lower().endswith(".pcblib"):
+                self.footprint_lib_paths.append(full)
         design = cp["Design"] if cp.has_section("Design") else {}
         self.hierarchy_mode = int(design.get("HierarchyMode", "0") or 0)
         self.power_names_first = design.get("PowerPortNamesTakePriority", "0") == "1"

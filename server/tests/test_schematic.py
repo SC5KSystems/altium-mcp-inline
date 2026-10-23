@@ -246,8 +246,59 @@ PRJ = os.environ.get("ALTIUM_TEST_PRJPCB", "")
 PCB = os.environ.get("ALTIUM_TEST_PCBDOC", "")
 
 
+class FootprintTests(unittest.TestCase):
+    @staticmethod
+    def stream(name, pads, other=1):
+        """A footprint Data stream: the name, the pads, then `other` non-pad primitives (tracks)."""
+        import struct
+        nm = bytes([len(name)]) + name.encode()
+        out = struct.pack("<I", len(nm)) + nm
+        for pad in pads:
+            blocks = [bytes([len(pad)]) + pad.encode(), b"", b"x", b"", bytes(61), b""]
+            out += bytes([2]) + b"".join(struct.pack("<I", len(b)) + b for b in blocks)
+        for _ in range(other):
+            out += bytes([4]) + struct.pack("<I", 3) + b"abc"
+        return out
+
+    def test_footprint_stream(self):
+        from offline.footprints import _footprint_data
+        self.assertEqual(_footprint_data(self.stream("SW_5x5", ["1", "2", "3", "4", ""])),
+                         ("SW_5x5", ["1", "2", "3", "4", ""]))
+
+    def test_pins_against_pads(self):
+        from offline import footprints
+        from offline.footprints import Footprint, SchPart
+        sp = SchPart("U1", ["AAAA"], "A.SchDoc", "", {"1", "2", "3"}, [("FP", True, False)], "X")
+        lib = {"FP": Footprint("FP", ["1", "2", "4", ""], "lib")}
+        import tempfile
+        orig = footprints.schematic_parts, footprints.read_pcblib
+        with tempfile.TemporaryDirectory() as tmp:
+            prj, lib_file = Path(tmp, "p.PrjPcb"), Path(tmp, "local.PcbLib")
+            prj.write_text("[Document1]\nDocumentPath=local.PcbLib\n", encoding="utf-8")
+            lib_file.write_bytes(b"")
+            try:
+                footprints.schematic_parts = lambda sheets: {"U1": sp}
+                footprints.read_pcblib = lambda p: lib
+                row = footprints.check(prj)["parts"][0]
+                lib_file.unlink()           # a library footprint whose PcbLib is gone
+                missing = footprints.check(prj)["parts"][0]
+            finally:
+                footprints.schematic_parts, footprints.read_pcblib = orig
+        self.assertEqual(missing["status"], "error")
+        self.assertIn("in none of the project's PcbLibs", missing["detail"])
+        self.assertEqual(row["status"], "error")
+        self.assertIn("pins with no pad: 3", row["detail"])
+        self.assertIn("pads with no pin (left without a net): 4", row["detail"])
+
+
 @unittest.skipUnless(PRJ and Path(PRJ).exists(), "set ALTIUM_TEST_PRJPCB to a .PrjPcb to run")
 class RealProjectTests(unittest.TestCase):
+    def test_footprints_resolve(self):
+        from offline import footprints
+        res = footprints.check(PRJ)
+        self.assertEqual(sum(res["counts"].values()), len(res["parts"]))
+        self.assertTrue(all(r["status"] != "error" or "detail" in r for r in res["parts"]))
+
     def test_project_reads(self):
         src = schtools.load_any(PRJ)
         s = src.netlist.summary()

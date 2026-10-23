@@ -172,6 +172,36 @@ def register(mcp):
         return await _run(go)
 
     @mcp.tool()
+    async def offline_sch_footprints(ctx: Context, path: str, board: str = "", extra_libs: list = None) -> str:
+        """
+        Run before Design > Update PCB Document. For every part: does it have a current PCB
+        footprint, is a library footprint in one of the project's PcbLibs, and does every pin
+        have a pad of the same designator (pads with no pin are warned: they get no net). With
+        a board (the project's own by default), also previews the update by matching parts on
+        their unique IDs as Altium does: parts added and removed, footprint swaps, renames, and
+        board parts with no schematic link.
+
+        Server (workspace) footprints are checked against copies found on the board or in
+        `extra_libs`; one found nowhere is listed as not checked. Altium leaves copies of
+        released workspace footprints under %LOCALAPPDATA%\\Temp\\EDMS_Release.
+
+        Args:
+            path (str): Absolute path to a .PrjPcb.
+            board (str): Optional .PcbDoc to preview against instead of the project's.
+            extra_libs (list): Optional .PcbLib files or folders searched for server footprints.
+        """
+        from offline import footprints
+        p = Path(path)
+        if p.suffix.lower() != ".prjpcb" or not p.is_file():
+            return json.dumps({"error": "expected an existing .PrjPcb: %s" % path})
+
+        def go():
+            res = footprints.check(p, board or None, extra_libs or [])
+            res["report"] = footprints.format_check(res)
+            return res
+        return await _run(go)
+
+    @mcp.tool()
     async def calc_profet_network(ctx: Context, part: str, sense_full_scale_a: float = None,
                                   adc_full_scale_v: float = None, input_high_v: float = None,
                                   input_series_ohm: float = None, pulse_peak_a: float = None,

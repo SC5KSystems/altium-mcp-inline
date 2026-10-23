@@ -89,8 +89,22 @@ def main(argv=None):
     p = sub.add_parser("sch-rules", help="check circuit blocks against a JSON list of rules")
     p.add_argument("file")
     p.add_argument("rules", help="JSON file holding a list of rules (see schtools.check_rules)")
+    p = sub.add_parser("sch-footprints", help="footprints resolve, pins match pads; Update PCB preview")
+    p.add_argument("file", help=".PrjPcb")
+    p.add_argument("--board", default=None, help="board to preview against (default: the project's)")
+    p.add_argument("--libs", type=_csv, default=[], help="extra .PcbLib files or folders, comma-separated")
+    p.add_argument("--json", action="store_true", help="full result instead of the text report")
     a = ap.parse_args(argv)
 
+    if a.cmd == "sch-footprints":
+        from . import footprints
+        res = footprints.check(a.file, a.board, a.libs)
+        if a.json:
+            _out(res)
+        else:
+            for line in footprints.format_check(res):
+                print(line)
+        return 0
     if a.cmd.startswith("sch-"):
         from . import schtools
         if a.cmd == "sch-compare":
