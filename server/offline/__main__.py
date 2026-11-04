@@ -123,7 +123,7 @@ def _load_plugins():
     """Commands defined in other modules register themselves here."""
     import importlib
     for mod in ("render", "editplan", "drc", "pour", "eco", "copper", "thermal", "power",
-                "autoroute", "tools"):
+                "specctra", "autoroute", "tools"):
         try:
             m = importlib.import_module(f".{mod}", __package__)
         except ImportError as e:

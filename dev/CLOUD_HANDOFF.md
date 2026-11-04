@@ -37,7 +37,8 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 | WP4 pour engine | done offline; Altium reading stored pours UNVERIFIED | `f51f28c` |
 | WP5 offline DRC | done offline; agreement with Altium's DRC UNVERIFIED | `f0b9814` |
 | WP6 offline ECO | done offline; Altium's view of ECO'd boards UNVERIFIED | `cd73856` |
-| WP7 power copper: planner, thermal, vias, fuse, FETs | done offline; Altium's view of planned copper UNVERIFIED; thermal accuracy is a screen | see git log ("power copper") |
+| WP7 power copper: planner, thermal, vias, fuse, FETs | done offline; Altium's view of planned copper UNVERIFIED; thermal accuracy is a screen | `111dd83` |
+| WP8 autorouter bridge: DSN export, Freerouting, SES import | done; routed here with Freerouting 2.5.0 on Java 25; Altium's view of routed boards and a Windows run UNVERIFIED | see git log ("autorouter") |
 
 ## How to run
 
@@ -60,6 +61,8 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 - Via array: `python -m offline vias 30 [--hole 0.3] [--layers 0.07 0.07]`
 - Fuse vs copper: `python -m offline fuse board.PcbDoc F1.2 --rating 10 [--i2t 500 | --fault AMPS SECONDS]`
 - FET pads: `python -m offline fets board.PcbDoc --current VBAT=30 [--flow "VBAT:30:J1.1>Q1.D"]`
+- Autoroute: `python -m offline autoroute board.PcbDoc [--nets S1 'SIG*'] [--keep-fixed none] -o plan.json [--check] [--json] [--neckdown] [--passes 20] [--timeout 900] [--java java25] [--freerouting jar] [--workdir dir] [--ses routed.ses]`; get Freerouting: `python -m offline autoroute --fetch`
+- DSN / SES alone: `python -m offline dsn board.PcbDoc -o board.dsn [--nets ...]`; `python -m offline ses routed.ses board.PcbDoc -o plan.json [--nets ...]`
 - Second reader (Linux, KiCad installed): `python3.12 dev/kicad_read.py a.PcbDoc b.PcbDoc`
 - All offline tests: `python -m unittest discover -s server/tests -p "test_[!a]*.py"`.
   The pattern leaves out `test_altium_script.py`, the pre-existing live
@@ -391,6 +394,56 @@ New: `copper.py` (planner), `thermal.py`, `power.py`. Changed: `pdn.py`.
   when its edges sit on cell centres). Use res at a tenth of the narrowest
   neck for ~10 %. Fractional cell coverage would fix it; not done.
 
+## WP8 notes (autorouter bridge)
+
+New: `specctra.py` (S-expression reader, DSN writer, SES reader, plan
+builder), `autoroute.py` (net selection, Freerouting runner, report).
+
+- **Freerouting here.** 2.5.0 executable jar from Maven Central
+  (`app.freerouting:freerouting`, SHA-1 `a9133705bd3f589ddcaa2acce4dbcfd2cd8ac640`,
+  pinned in `autoroute.py`; the GitHub releases page is blocked from this
+  session but Maven Central is not). 2.4.1 and 2.5.0 are compiled for Java
+  25 (class file 69); Ubuntu's `openjdk-25-jre-headless` runs it. The tool
+  reads the needed release from the jar and picks a Java that has it.
+- **Freerouting facts learned by running it** (2.5.0): settings go on the
+  command line as `--section.key=value` (`-mp`/`-inc` are deprecated
+  aliases that no longer take effect for ignoring classes); fan-out runs on
+  every SMD pin unless `router.fanout.enabled=false`; automatic neck-down
+  narrows tracks to 0.75x/0.6x of the class width; a fixed track counts as
+  joined to an SMD pin only where it ends at the pin centre, a region only
+  where it holds the centre; netless fixed copper shows as a clash with
+  everything it touches; the optimizer runs only when nothing at all is
+  open; it attempts a version check over the network (blocked here).
+- **Design decisions from those facts.** Copper of nets not routed goes in
+  as one complete net per island (poured copper left out), all in an
+  ignored class; design-only hairline stubs join off-centre track ends to
+  pad centres on those islands only (they cut Freerouting's view of open
+  islands on HiFive from 31 to 8; the remaining few keep its optimizer off
+  on that board; stubs on routed nets would come back in a reroute); obround
+  pads as Specctra paths, square-on rectangles as rects, everything else as
+  polygons; zero-length tracks as small polygons.
+- **Results (HiFive fixture, 2 layers, 6 mil rules)**: signal nets' free
+  tracks and vias stripped, then routed back with `--check` (nets named
+  here by kind only; the test picks its own by rule, see `pick_nets`):
+
+  | Stripped nets | Open before | Open after | Completion | New DRC | Time |
+  |---|---|---|---|---|---|
+  | 4 short nets clear of fine-pitch parts (the test's rule) | 8 | 1 | 87.5 % | 0 | 44 s |
+  | 4 hand-picked nets (bus, debug, UART, SPI) | 5 | 0 | 100 % | 0 | 13 s |
+  | those 4 + 4 more escaping the MCU's 0.4 mm-pitch QFN | 10 | 4 | 60 % | 0 | 31 s |
+  | the 4 hand-picked + 2 still routed, `--keep-fixed none` | 5 | 0 | 100 % | 0 | 13 s |
+  | the 8-net case with `--neckdown` | 10 | 0 | 100 % | 57 (Width) | 27 s |
+
+  The connections that stay open run into the QFN's fan-out and the headers
+  beside it, where the board's own routing uses the rule's 5 mil
+  track-to-track entry. Freerouting finds paths there but cannot insert
+  them at 6 mil (nor with 5 mil everywhere); with `--neckdown` it narrows
+  tracks to 4.5 and 3.6 mil, which the DRC flags against the Width rule.
+- **Not handled:** blind/buried routing vias (new vias are through vias),
+  differential pairs and length rules, net-class-to-class clearances (each
+  routed class gets its worst case), text on copper as an obstacle, plane
+  layers (routing is on signal layers only).
+
 ## UNVERIFIED (needs Altium)
 
 Run these on the Altium PC, in order. Each says what passing looks like.
@@ -499,6 +552,18 @@ Run these on the Altium PC, in order. Each says what passing looks like.
     --power ...` with the same current and part losses. Pass: within 30 %
     of the measured rise. If it reads low, keep that ratio as a margin.
 
+18. **Autorouted copper opens and passes DRC.** On a copy of a board with
+    a few signal nets unrouted: `python -m offline autoroute C:\scratch\b.PcbDoc --nets <nets> -o C:\scratch\route.json --check`
+    (needs Java 25 and `python -m offline autoroute --fetch` once), then
+    `python -m offline edit C:\scratch\b.PcbDoc C:\scratch\route.json -o C:\scratch\routed.PcbDoc`.
+    Open routed.PcbDoc, Repour All, run DRC. Pass: no dialog; the new tracks
+    and vias sit on their nets and the ratsnest for those nets is gone where
+    the report says it routed; DRC shows nothing new against the original.
+    Also pass: the command found Java 25 and the jar on Windows without
+    `--java`. On failure: send the printed report, `freerouting.log` from
+    the work folder (it holds no board data beyond net names), and the DRC
+    report.
+
 ## Decisions made without asking
 
 - Work from `origin/main` + eager-ptolemy because phase-6 is missing (as the
@@ -538,3 +603,7 @@ Run these on the Altium PC, in order. Each says what passing looks like.
   target (60 on the test board); prune by hand if drill count matters.
 - Thermal: components are package nodes (case temperature), not watts
   smeared over their pads.
+- Autorouter: power nets stay out unless named; existing copper is fixed
+  unless `--keep-fixed none`; other nets' pours are left out to be repoured;
+  neck-down is off; Freerouting's network access is blocked by default;
+  new vias come from the RoutingVias rule (else the board's commonest via).

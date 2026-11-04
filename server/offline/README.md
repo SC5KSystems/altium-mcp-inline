@@ -17,6 +17,7 @@ Read, check, edit and write Altium `.PcbDoc` files without Altium. Run from the
     python -m offline vias 30 --hole 0.3                      # via array for a layer change
     python -m offline fuse board.PcbDoc F1.2 --rating 10 --i2t 500
     python -m offline fets board.PcbDoc --current VBAT=30     # FET pad entry density
+    python -m offline autoroute board.PcbDoc --nets 'SIG*' -o plan.json --check  # Freerouting
 
 All lengths are millimetres. Coordinates are absolute (database) coordinates,
 Y up, as the file stores them; `PcbDoc.origin` gives the user origin.
@@ -48,6 +49,8 @@ scipy, Pillow; olefile for tests).
 | `copper.py` | power-copper planner: free room, corridor, layer joins, neck vias, PDN loop |
 | `thermal.py` | steady-state temperature rise from PDN heat and component watts |
 | `power.py` | IPC-2221 and Onderdonk formulas, via arrays, fuse vs copper, FET pad screen |
+| `specctra.py` | Specctra DSN export and SES import (`dsn`, `ses` commands) |
+| `autoroute.py` | route signal nets with Freerouting, back as an EditPlan |
 | `synth.py` | small synthetic boards for tests |
 | `fixtures.py` | where tests find real boards |
 
@@ -125,3 +128,37 @@ power FET pad. Both are screening checks, not certification.
 Current density comes from the PDN grid: a cell is copper when its centre
 is, so a neck reads within one cell of its width. Use a resolution of a
 tenth of the narrowest neck you care about for about 10 %.
+
+## Autorouting
+
+`autoroute` exports a Specctra DSN, runs Freerouting headless and turns
+its session (SES) into an EditPlan of tracks and vias. Without `--nets` it
+takes every net with an open connection except power nets (a pour or plane,
+a power-like name, a power net class, or tracks 0.4 mm wide and up): those
+are the power-copper planner's. Existing copper stays put unless
+`--keep-fixed none` lets the router redo the routed nets (the plan then
+removes their free tracks and vias first). Other nets' poured copper is left
+out of the design so routes may cross it; repour after applying the plan.
+`--check` applies the plan in memory and runs the DRC before and after (with
+pours repoured on both) and reports only new violations. Exit 1 when a
+connection stays open or a violation is new.
+
+The DSN gives each net to route a class with the width the Width rule
+prefers and the largest clearance the Clearance rule asks of a track or via
+against other copper. Copper of nets not routed goes in as one net per
+connected island, each complete, in a class the router is told to ignore, so
+it never touches them and sees nothing of theirs to connect. Freerouting
+treats a track as joined to an SMD pad only where it ends at the pad's
+centre, so short design-only stubs join off-centre track ends to their pads.
+
+Freerouting (GPL) is not part of this repo: `autoroute --fetch` downloads the
+pinned release from Maven Central and checks its SHA-1, or point
+`--freerouting` / `$FREEROUTING_JAR` at a jar. Versions 2.4 and up need
+Java 25 (`--java`, `$FREEROUTING_JAVA`, or found under `$JAVA_HOME`, PATH or
+the usual install folders). It runs with analytics, its API and MCP servers
+and fan-out off, settings and logs in the work folder, and Java's HTTP(S)
+proxy pointed at a closed local port, so its network calls fail (the one
+seen in its log is a version check). `--allow-network` lifts the block. Its automatic neck-down stays off: it narrows tracks to
+0.75x and 0.6x of the class width at pins whatever the Width rule says;
+`--neckdown` allows it and the DRC then shows where the rule breaks.
+`--ses` imports a session routed elsewhere (e.g. in Freerouting's GUI).
