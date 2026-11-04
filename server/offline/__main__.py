@@ -5,6 +5,7 @@ Commands print a short human summary, or JSON with --json. Lengths are mm.
 
 import argparse
 import json
+import os
 import sys
 
 
@@ -121,7 +122,8 @@ command("rules", cmd_rules, "list rules and any scope this tool cannot evaluate"
 def _load_plugins():
     """Commands defined in other modules register themselves here."""
     import importlib
-    for mod in ("render", "editplan", "drc", "pour", "eco", "copper", "autoroute", "tools"):
+    for mod in ("render", "editplan", "drc", "pour", "eco", "copper", "thermal", "power",
+                "autoroute", "tools"):
         try:
             m = importlib.import_module(f".{mod}", __package__)
         except ImportError as e:
@@ -144,6 +146,11 @@ def main(argv=None):
     args = ap.parse_args(argv)
     try:
         rc = args.func(args)
+    except BrokenPipeError:
+        # the reader went away (| head): stop quietly, as the Python docs advise
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        return 1
     except (ValueError, KeyError, ImportError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

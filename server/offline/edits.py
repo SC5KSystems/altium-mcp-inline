@@ -372,6 +372,10 @@ class Editor:
         return rec[0] if isinstance(rec, tuple) else rec
 
     # ------------------------------------------------------------ adding primitives
+    def batch(self):
+        """with ed.batch(): many adds, one reindex (lookups stale inside)."""
+        return pcbwrite.batch(self.doc)
+
     def add(self, rec):
         out = pcbwrite.add(self.doc, rec)
         if isinstance(rec, tuple):

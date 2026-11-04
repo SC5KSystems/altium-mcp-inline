@@ -12,6 +12,11 @@ Read, check, edit and write Altium `.PcbDoc` files without Altium. Run from the
     python -m offline pour board.PcbDoc --compare           # repour offline, check against saved
     python -m offline drc board.PcbDoc [--preset jlcpcb-2oz] # the board's rules, without Altium
     python -m offline eco preview board.PrjPcb               # schematic vs board, like Update PCB
+    python -m offline copper plan.json board.PcbDoc -o out.json  # plan power copper for a current
+    python -m offline thermal board.PcbDoc --flow "VBAT:30:J1.1>Q1.D" --power Q1=2
+    python -m offline vias 30 --hole 0.3                      # via array for a layer change
+    python -m offline fuse board.PcbDoc F1.2 --rating 10 --i2t 500
+    python -m offline fets board.PcbDoc --current VBAT=30     # FET pad entry density
 
 All lengths are millimetres. Coordinates are absolute (database) coordinates,
 Y up, as the file stores them; `PcbDoc.origin` gives the user origin.
@@ -40,6 +45,9 @@ scipy, Pillow; olefile for tests).
 | `sch.py` | SchDoc/PrjPcb reader: parts, pins, footprints, the netlist |
 | `footprints.py` | PcbLib reader; footprints from a library or another board; place and swap |
 | `eco.py` | preview, link, apply (as an EditPlan), swap, gaps |
+| `copper.py` | power-copper planner: free room, corridor, layer joins, neck vias, PDN loop |
+| `thermal.py` | steady-state temperature rise from PDN heat and component watts |
+| `power.py` | IPC-2221 and Onderdonk formulas, via arrays, fuse vs copper, FET pad screen |
 | `synth.py` | small synthetic boards for tests |
 | `fixtures.py` | where tests find real boards |
 
@@ -80,3 +88,40 @@ remove or re-footprint. `eco apply` turns that into an EditPlan (merges first
 so tracks and pours follow) and, with `-o`, writes the board and lists the
 gaps left to route. `eco gaps` finds pieces of a net that are not joined,
 e.g. both sides of a removed part once its nets are merged.
+
+## Power copper
+
+`copper plan.json` shapes a net's copper for a current. Copper may go
+wherever the net may have copper: inside the board and the plan's area,
+outside keep-outs, clear of every other net by the clearance a region of
+this net would get (the voids `pour.py` uses). The planner turns the free
+room into pieces per layer and joins them: a piece stays when a terminal
+touches it or it lies on a path from the sources to the sinks, so nothing
+it adds floats. Where a path changes layer it places a via array (sized by
+`power.size_vias` for the whole current), plus arrays at both terminals.
+It then loops against `pdn.py`: solve, find the worst 1 mm neck, widen the
+corridor there, and when a neck stops improving put a via cluster at it so
+the current can change layers around the obstacle. It stops when the targets
+are met or the room stops growing, and names the object that limits the
+worst neck. Vias stay out of pads unless `"via": {"in_pad": true}`.
+The output is an EditPlan (`add_region`, `add_via`) plus a report: drop,
+watts, density, via currents against their IPC-2221 capacity, and a
+thermal estimate. Exit status 1 when a target is missed.
+
+`thermal` is a 2.5-D steady-state model: per copper layer a sheet of copper
+and half the dielectric on each side, barrels between layers, natural
+convection and radiation from both faces. PDN heat is the solver's own
+per-cell dissipation; a powered component is one package node tied to its
+pads through solder joints, so its figure is the case temperature. Checked
+against published IPC-2152 figures (`thermal --ipc-check`): it reads cooler
+than the charts, so treat it as a screen and keep margin; see
+`dev/CLOUD_HANDOFF.md` for the numbers.
+
+`fuse` compares a fuse's I²t with what the copper downstream survives
+(Onderdonk, adiabatic) and its hold current with the IPC-2221 rating of the
+narrowest neck. `fets` screens the current density where copper enters each
+power FET pad. Both are screening checks, not certification.
+
+Current density comes from the PDN grid: a cell is copper when its centre
+is, so a neck reads within one cell of its width. Use a resolution of a
+tenth of the narrowest neck you care about for about 10 %.

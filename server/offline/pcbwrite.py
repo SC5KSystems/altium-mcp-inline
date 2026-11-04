@@ -8,6 +8,7 @@ check_integrity() on it. A save that fails the check writes nothing.
 The cross-references kept consistent are listed in PCBDOC_FORMAT.md.
 """
 
+import contextlib
 import re
 import struct
 from pathlib import Path
@@ -238,6 +239,25 @@ def ensure_storage(doc, name, kind="binary"):
     return st
 
 
+@contextlib.contextmanager
+def batch(doc):
+    """Add many records with one reindex at the end instead of one per add.
+    Lookups on the document are stale until the block ends."""
+    depth = getattr(doc, "_batch_depth", 0)
+    doc._batch_depth = depth + 1
+    try:
+        yield doc
+    finally:
+        doc._batch_depth = depth
+        if depth == 0:
+            doc.reindex()
+
+
+def _reindex(doc):
+    if not getattr(doc, "_batch_depth", 0):
+        doc.reindex()
+
+
 def add(doc, rec):
     """Append a record built by records.py; returns it with its index set.
 
@@ -252,7 +272,7 @@ def add(doc, rec):
         a.index, b.index = len(sa.records), len(sb.records)
         sa.records.append(a)
         sb.records.append(b)
-        doc.reindex()
+        _reindex(doc)
         return a
     st = ensure_storage(doc, rec.storage)
     rec.index = len(st.records)
@@ -268,5 +288,5 @@ def add(doc, rec):
             doc.widestrings[idx] = s
             doc.widestring_order.append(idx)
             rec._set("I", 115, idx)
-    doc.reindex()
+    _reindex(doc)
     return rec

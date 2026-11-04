@@ -302,20 +302,22 @@ def solve(doc, net, sources, sinks, current, res=0.2, temp_c=20.0, thickness=Non
         raise PdnError(f"solve failed: {e}")
     v[floating] = np.nan
 
-    off = rows != cols
-    g_edges = -vals[off & (rows < cols)]
-    dv = v[rows[off & (rows < cols)]] - v[cols[off & (rows < cols)]]
-    power = float(np.nansum(g_edges * dv * dv))
+    edge = (rows != cols) & (rows < cols)
+    er, ec = rows[edge], cols[edge]
+    pe = np.nan_to_num(-vals[edge] * (v[er] - v[ec]) ** 2)
+    power = float(pe.sum())
+    # each link's I^2 R split between its two ends: W per node
+    node_p = 0.5 * (np.bincount(er, pe, minlength=n) + np.bincount(ec, pe, minlength=n))
 
     layers_out, hotspots = {}, []
     for lay, a in ids.items():
         vm = np.full(a.shape, np.nan)
         sel = a >= 0
         vm[sel] = v[a[sel]]
-        gy, gx = np.gradient(np.where(sel, vm, np.nan), res)
-        jmag = np.hypot(gx, gy) / rho
-        jmag = np.where(sel, np.nan_to_num(jmag, nan=0.0), np.nan)
-        layers_out[lay] = {"v": vm, "j": jmag}
+        jmag = np.where(sel, np.hypot(*_face_gradient(vm, res)) / rho, np.nan)
+        pm = np.full(a.shape, np.nan)
+        pm[sel] = node_p[a[sel]]
+        layers_out[lay] = {"v": vm, "j": jmag, "p": pm}
         if np.isfinite(jmag).any():
             idx = np.nanargmax(jmag)
             rr, cc = np.unravel_index(idx, jmag.shape)
@@ -338,6 +340,27 @@ def solve(doc, net, sources, sinks, current, res=0.2, temp_c=20.0, thickness=Non
                      terminal_v={ref: float(v[t]) for ref, t in terminals.items()},
                      layers=list(ids), maps=layers_out, hotspots=hotspots, vias=vias,
                      warnings=warnings)
+
+
+def _face_gradient(vm, res):
+    """Per-cell (dv/dx, dv/dy) from the faces a cell shares with copper
+    neighbours: interior cells average both faces, cells on a copper edge use
+    the one they have, so a one- or two-cell neck still shows its density."""
+    out = []
+    for axis in (1, 0):
+        d = np.diff(vm, axis=axis) / res
+        ok = np.isfinite(d)
+        dz = np.where(ok, d, 0.0)
+        s = np.zeros(vm.shape)
+        c = np.zeros(vm.shape)
+        lo = (slice(None), slice(None, -1)) if axis == 1 else (slice(None, -1), slice(None))
+        hi = (slice(None), slice(1, None)) if axis == 1 else (slice(1, None), slice(None))
+        s[lo] += dz
+        c[lo] += ok
+        s[hi] += dz
+        c[hi] += ok
+        out.append(np.where(c > 0, s / np.maximum(c, 1), 0.0))
+    return out
 
 
 def _reachable(n, rows, cols, start):

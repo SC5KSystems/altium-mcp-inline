@@ -36,7 +36,8 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 | WP3 PcbDoc writer, editor, EditPlan, live backend | done offline; Altium open + live scripts UNVERIFIED | `9189a8a` |
 | WP4 pour engine | done offline; Altium reading stored pours UNVERIFIED | `f51f28c` |
 | WP5 offline DRC | done offline; agreement with Altium's DRC UNVERIFIED | `f0b9814` |
-| WP6 offline ECO | done offline; Altium's view of ECO'd boards UNVERIFIED | see git log ("offline ECO") |
+| WP6 offline ECO | done offline; Altium's view of ECO'd boards UNVERIFIED | `cd73856` |
+| WP7 power copper: planner, thermal, vias, fuse, FETs | done offline; Altium's view of planned copper UNVERIFIED; thermal accuracy is a screen | see git log ("power copper") |
 
 ## How to run
 
@@ -54,6 +55,11 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 - Compare with Altium's DRC: `python dev/compare_drc.py offline_drc.json altium_drc.json`
 - ECO: `python -m offline eco preview board.PrjPcb [board.PcbDoc] [--json]`; `eco link board.PrjPcb board.PcbDoc -o linked.PcbDoc`; `eco apply board.PrjPcb board.PcbDoc --lib parts.PcbLib [--plan plan.json] [-o out.PcbDoc]`; `eco swap board.PcbDoc U1 NEW_FOOTPRINT --lib parts.PcbLib -o out.PcbDoc`; `eco gaps board.PcbDoc [--net VBAT]`
 - Repour offline: `python -m offline pour board.PcbDoc [--polygon N|name] [--mode clean|sequential|saved] [--compare] [--dents] [-o out.PcbDoc --store pour|solid|unpoured] [--png pours.png] [--json]`
+- Plan power copper: `python -m offline copper plan.json board.PcbDoc -o plan_out.json [--png copper.png] [--json]` (plan format in `server/offline/copper.py`'s docstring; exit 1 when a target is missed), then `python -m offline edit board.PcbDoc plan_out.json -o planned.PcbDoc`
+- Thermal: `python -m offline thermal board.PcbDoc --flow "VBAT:30:J1.1>Q1.5+Q1.6" [--power Q1=1.8] [--ambient 25] [--res 0.5] [--json]`; against IPC-2152: `python -m offline thermal --ipc-check`
+- Via array: `python -m offline vias 30 [--hole 0.3] [--layers 0.07 0.07]`
+- Fuse vs copper: `python -m offline fuse board.PcbDoc F1.2 --rating 10 [--i2t 500 | --fault AMPS SECONDS]`
+- FET pads: `python -m offline fets board.PcbDoc --current VBAT=30 [--flow "VBAT:30:J1.1>Q1.D"]`
 - Second reader (Linux, KiCad installed): `python3.12 dev/kicad_read.py a.PcbDoc b.PcbDoc`
 - All offline tests: `python -m unittest discover -s server/tests -p "test_[!a]*.py"`.
   The pattern leaves out `test_altium_script.py`, the pre-existing live
@@ -309,6 +315,82 @@ place and swap) and `eco.py`.
   schematic records (a newer pin format). Not handled: multi-channel
   designs, net classes from the schematic, parameters other than Comment.
 
+## WP7 notes (power copper)
+
+New: `copper.py` (planner), `thermal.py`, `power.py`. Changed: `pdn.py`.
+
+- **PDN fixes found on the way.** Current density used `np.gradient`, which
+  returns NaN beside a copper edge; those cells were set to 0, so a track
+  one or two cells wide read **zero** density and the edge cells of every
+  neck read low. Density now comes from the faces a cell shares with copper
+  neighbours (both faces inside, the one face on an edge). The solver also
+  returns a per-cell dissipation map (`maps[layer]["p"]`, each link's I²R
+  split between its ends; via barrels included); it sums to the solver's
+  power within 0.1 %, and the thermal model uses it.
+- **Planner** (`copper plan.json`): free room = where a region of the net
+  may go (board minus clearance voids, keep-outs, the plan's area and
+  keep-outs; other nets' pours respected unless `respect_pours: false`).
+  Pieces of free room inside a corridor form a graph: a piece touching a
+  terminal, or overlapping a piece on another layer where a via fits. Kept:
+  pieces on source-to-sink paths and pieces a terminal touches; dead ends
+  are dropped (they would float). Vias: arrays at both terminals
+  (`size_vias` for the layer share), a full-current array on each layer
+  change of a breadth-first tree from the sources, and a cluster at any
+  neck that stops improving (so current changes layer around a fence).
+  Vias stay out of pads unless `"via": {"in_pad": true}`. Density is the
+  worst 1 mm window average (`density_window_mm`), not the singular corner
+  cell; both are reported. If the free room joins nothing, the corridor
+  grows by doubling until the room stops growing; the error then gives the
+  closest approach between the two sides and the object blocking it.
+  Exit 1 when a target is missed; the report says which (density, drop,
+  rise, via current over its IPC-2221 figure).
+- **Synthetic results.** Test board (80 x 50 mm, 2 oz, 2 layers, a
+  connector to a FET drain past a top fence and a bottom fence), 30 A,
+  targets 40 A/mm² and 30 mV: met in 10 iterations, 3.1 s, 37.3 A/mm²,
+  16.3 mV, 60 vias; the plan applies with no DRC violation (test). Without
+  neck clusters the same board stalls at 49.5 A/mm² at a fence tip.
+- **Large board.** `synth.stress_board()` (120 x 100 mm, 3,612 tracks, 500
+  arcs, 480 pads, 300 vias, 48 polygons), VIN 30 A from one header pin to
+  another: 32 s for 12 iterations plus the thermal estimate (was 136 s
+  before profiling; candidate building and via placement were the cost).
+  Not met, correctly: the sink pin is boxed in by its neighbours; the
+  report names J2 pin 3, 0.25 mm from the worst neck. The applied plan adds
+  no DRC violation (0 new; the random board has 7,455 of its own).
+- **Thermal** (`thermal.py`): per copper layer one node per cell (copper
+  sheet plus half of each adjacent dielectric), dielectric between layers,
+  barrels, natural convection (horizontal plate correlations, both faces)
+  plus linearised radiation, iterated on the rise. A powered component is a
+  package node tied to its pad cells through 75 µm solder joints; its
+  figure is the case (add P x Rth(j-c)). Before that change a part's watts
+  were spread over all its pad cells and a small isolated gate pad heated
+  unphysically. Against published IPC-2152 figures (`--ipc-check`, res
+  0.5 mm):
+
+  | Case | Model | Published | Ratio |
+  |---|---|---|---|
+  | Universal chart: 10 A, 520 sq mil, 3 oz, 0.070" polyimide | 19.1 °C | 20 °C | 0.96 |
+  | Olson worked example: 10 A, 180 mil 1 oz external, planes below | 12.5 °C | 20 °C | 0.63 |
+  | Conservative chart 4 A, 300 sq mil (upper bound) | 5.4 °C | ≤ 10 °C | ok |
+  | Conservative chart 10 A, 680 sq mil (upper bound) | 10.0 °C | ≤ 20 °C | ok |
+
+  So it can read up to ~40 % cool; use it to compare layouts and add margin
+  for absolute numbers. Not modelled: heat leaving through connectors,
+  leads and screws, enclosures, forced air, transients.
+- **Via sizer.** 30 A, 0.3 mm hole, 25 µm plating, 1.6 mm board: 0.95 A per
+  via at a 10 °C rise (barrel as an IPC-2221 internal conductor), so 20 vias
+  for a half-current layer share or 40 for a full transfer, with a 1.25x
+  margin.
+- **Fuse check.** Onderdonk I²t of the narrowest copper downstream (from a
+  PDN solve) against the fuse's I²t, plus the hold current against the
+  IPC-2221 rating of that neck (10 mil 1 oz: 2.57 A for 1 s, a hand
+  evaluation of Onderdonk's formula). **FET screen**: density in a 0.4 mm ring round each
+  power-FET pad (FETs found by designator/pattern); warn 50, fail 100
+  A/mm² are screening values, not a standard.
+- **Accuracy limit.** A cell is copper when its centre is, so a neck reads
+  within one cell of its width (a 0.5 mm track at 0.1 mm reads 25 % high
+  when its edges sit on cell centres). Use res at a tenth of the narrowest
+  neck for ~10 %. Fractional cell coverage would fix it; not done.
+
 ## UNVERIFIED (needs Altium)
 
 Run these on the Altium PC, in order. Each says what passing looks like.
@@ -399,6 +481,24 @@ Run these on the Altium PC, in order. Each says what passing looks like.
     were re-symbolled and check Update PCB no longer offers to remove and
     re-add them.
 
+16. **Planned copper opens and passes DRC.** On a copy of a board with a
+    power path: write a plan.json for it (net, source and sink pads,
+    current, targets), then
+    `python -m offline copper plan.json C:\scratch\b.PcbDoc -o C:\scratch\plan_out.json --png C:\scratch\copper.png`
+    and `python -m offline edit C:\scratch\b.PcbDoc C:\scratch\plan_out.json -o C:\scratch\planned.PcbDoc`.
+    Open planned.PcbDoc in Altium, Tools > Polygon Pours > Repour All, then
+    run DRC. Pass: no dialog on open; the new regions and vias are on the
+    net (PCB panel); the copper matches copper.png; DRC shows no Clearance
+    or Short-Circuit violation that the original board did not have. On
+    failure: send the DRC report and the planner's printed report (not the
+    board).
+17. **Thermal estimate against a real board** (optional; needs hardware,
+    not Altium). On a built board with a known steady load, measure the
+    hottest copper (IR camera or thermocouple, 30 min at constant current,
+    still air) and run `python -m offline thermal board.PcbDoc --flow ...
+    --power ...` with the same current and part losses. Pass: within 30 %
+    of the measured rise. If it reads low, keep that ratio as a margin.
+
 ## Decisions made without asking
 
 - Work from `origin/main` + eager-ptolemy because phase-6 is missing (as the
@@ -431,3 +531,10 @@ Run these on the Altium PC, in order. Each says what passing looks like.
   names any unit's unique id; `eco link` writes the lowest unit's id.
 - Placed and swapped parts do not get 3D bodies; their models live in the
   library, so Altium's own Update from Libraries is the way to add them.
+- Power copper: density targets are judged on a 1 mm window average (a
+  corner cell is singular and would never meet any target); the corner
+  peak is reported beside it. The planner never puts vias in pads unless
+  asked, drops copper that would float, and prefers more vias to a missed
+  target (60 on the test board); prune by hand if drill count matters.
+- Thermal: components are package nodes (case temperature), not watts
+  smeared over their pads.
