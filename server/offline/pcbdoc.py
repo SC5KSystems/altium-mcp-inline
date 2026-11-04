@@ -309,6 +309,21 @@ class BinRecord:
         return self.flags2 == 2
 
     @property
+    def keepout_restrictions(self):
+        """What a keep-out keeps out: KEEPOUT_VIA | _TRACK | _COPPER | _SMD_PAD |
+        _TH_PAD. The mask byte follows the V7 layer id; a keep-out without one
+        (or with 0), and anything on the Keep-Out layer, keeps out everything.
+        0 for objects that are not keep-outs."""
+        if not self.is_keepout and self.layer != L.KEEPOUT:
+            return 0
+        off = self._v7_off
+        if off is not None and self._has(off + 4, 1, self._main):
+            v = self.subs[self._main][off + 4]
+            if v:
+                return v
+        return KEEPOUT_ALL
+
+    @property
     def net(self):
         v = self._get("H", 3, self._main)
         return None if v == NONE16 else v
@@ -670,6 +685,9 @@ class Fill(BinRecord):
                 for dx, dy in ((-hx, -hy), (hx, -hy), (hx, hy), (-hx, hy))]
 
 
+KEEPOUT_VIA, KEEPOUT_TRACK, KEEPOUT_COPPER, KEEPOUT_SMD_PAD, KEEPOUT_TH_PAD = 1, 2, 4, 8, 16
+KEEPOUT_ALL = 31
+
 REGION_KINDS = {0: "copper", 1: "polygon_cutout", 2: "dashed_outline", 3: "unknown3",
                 4: "cavity"}
 
@@ -764,6 +782,13 @@ class Region(BinRecord):
     @property
     def is_board_cutout(self):
         return parse_bool(self.props.get("ISBOARDCUTOUT"))
+
+    @property
+    def keepout_restrictions(self):
+        if not self.is_keepout and self.layer != L.KEEPOUT:
+            return 0
+        v = int(parse_float(self.props.get("KEEPOUTRESTRICTIONS"), KEEPOUT_ALL))
+        return v or KEEPOUT_ALL
 
     def outline(self, arc_step_deg=5.0):
         """Closed outline points (mm). A Regions6 record borrows its

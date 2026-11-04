@@ -10,6 +10,7 @@ Read, check, edit and write Altium `.PcbDoc` files without Altium. Run from the
     python -m offline render board.PcbDoc -o board.png --net VBAT
     python -m offline edit board.PcbDoc plan.json -o edited.PcbDoc
     python -m offline pour board.PcbDoc --compare           # repour offline, check against saved
+    python -m offline drc board.PcbDoc [--preset jlcpcb-2oz] # the board's rules, without Altium
 
 All lengths are millimetres. Coordinates are absolute (database) coordinates,
 Y up, as the file stores them; `PcbDoc.origin` gives the user origin.
@@ -34,6 +35,7 @@ scipy, Pillow; olefile for tests).
 | `render.py` | PNG/SVG of layers, nets, ratsnest, markers, heat maps, diffs |
 | `edits.py`, `editplan.py`, `live.py` | in-memory edits, JSON EditPlans, the same plan as live scripts |
 | `pour.py` | polygon pours: clearances, reliefs, necks, islands, dead copper, pour order |
+| `drc.py` | design rule check from Rules6, fab presets for 2 oz copper, cached-result comparison |
 | `synth.py` | small synthetic boards for tests |
 | `fixtures.py` | where tests find real boards |
 
@@ -54,3 +56,14 @@ so `dents()` shows where stale copper would leave a dent. `store(results,
 board in memory is then usable by `connect`, `pdn`, `render` and the DRC.
 `effective_copper()` is what checks use: saved copper where it exists, a
 fresh pour where a polygon is unpoured or listed as stale.
+
+## DRC
+
+`drc.DRC(doc).run()` checks Clearance, ShortCircuit, UnRoutedNet, Width,
+HoleSize, MinimumAnnularRing, HoleToHoleClearance, BoardOutlineClearance,
+SilkToSolderMaskClearance and ComponentClearance from the board's own rules.
+It pours unpoured polygons first (`--copper`), honours keep-out restriction
+masks, treats touching no-net copper as joined, and leaves text out unless
+`--text` (then each text is its box). `--compare-cached` checks against the
+DRC results Altium saved in the file; `dev/compare_drc.py` against a live
+`get_drc_violations` export.

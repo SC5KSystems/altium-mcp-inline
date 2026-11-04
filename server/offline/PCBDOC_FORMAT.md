@@ -194,6 +194,22 @@ spoke exists when pour copper covers its continuation for half a conductor
 width past the air gap; neck removal acts like a morphological opening with
 half the neck width.
 
+## Keep-outs
+
+A track, arc or fill is a keep-out when flags byte 2 is 2; the byte after
+its V7 layer id is the restriction mask (via 1, track 2, copper 4, SMD pad 8,
+TH pad 16); 0, a missing byte, or the Keep-Out layer mean all. Regions keep
+the mask in `KEEPOUTRESTRICTIONS`. A pour avoids a keep-out only when the
+copper bit is set.
+
+## Cached DRC results
+
+`T<Kind>Violation` storages (TClearanceViolation, TMatchedNetLengthsViolation,
+...) are text records: `RULEINDEX` (index into Rules6), `PRIM1ID`/`PRIM1INDEX`
+and `PRIM2ID`/`PRIM2INDEX` (object kind and its index in that kind's
+storage), `LOCATION1.X/Y`, `LOCATION2.X/Y`, `DESCRIPTION`. They go stale (and
+are dropped by the editor) once an edit renumbers anything.
+
 ## Preserved without being understood
 
 Kept byte for byte; listed with what could go stale after an edit:

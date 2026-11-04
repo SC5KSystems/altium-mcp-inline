@@ -7,6 +7,7 @@ uses a function scope.py cannot evaluate is listed in `unevaluated` and never
 applied, so a check that depends on it says so instead of guessing.
 """
 
+from . import layers as L
 from .pcbdoc import parse_bool, parse_float, parse_length
 from .scope import ScopeError, compile_scope
 
@@ -130,11 +131,28 @@ class RuleSet:
         return max(vals) if vals else 0.0
 
     def width(self, obj):
+        """Width limits for a track or arc on its layer. Rules may carry
+        per-layer values (TOPLAYER_MINWIDTH, MIDLAYERn_MAXWIDTH, ...) that
+        override MINLIMIT / PREFEREDWIDTH / MAXLIMIT."""
         c = self.best("Width", obj)
         if c is None:
             return None
-        return {"min": c.length("MINLIMIT"), "preferred": c.length("PREFEREDWIDTH"),
-                "max": c.length("MAXLIMIT"), "rule": c.name}
+        lay = getattr(obj, "layer", None)
+        prefix = None
+        if lay == L.TOP:
+            prefix = "TOPLAYER_"
+        elif lay == L.BOTTOM:
+            prefix = "BOTTOMLAYER_"
+        elif lay is not None and 2 <= lay <= 31:
+            prefix = f"MIDLAYER{lay - 1}_"
+
+        def pick(key, generic):
+            if prefix and c.rule.props.get(prefix + key) is not None:
+                return c.length(prefix + key)
+            return c.length(generic)
+
+        return {"min": pick("MINWIDTH", "MINLIMIT"), "preferred": pick("PREFWIDTH", "PREFEREDWIDTH"),
+                "max": pick("MAXWIDTH", "MAXLIMIT"), "rule": c.name}
 
     def hole_size(self, obj):
         c = self.best("HoleSize", obj)
@@ -177,6 +195,20 @@ class RuleSet:
     def solder_mask_expansion(self, obj):
         c = self.best("SolderMaskExpansion", obj)
         return c.length("EXPANSION") if c else 0.1016
+
+    def tented(self, obj, side):
+        """True when a via's mask opening on `side` ("top"/"bottom") is
+        closed by a SolderMaskExpansion rule's tenting flag. Without a rule
+        that says either way, vias count as tented."""
+        c = self.best("SolderMaskExpansion", obj)
+        if c is None:
+            return True
+        p = c.rule.props
+        v = p.get("ISTENTINGTOP") if side == "top" else \
+            (p.get("ISTENTINGBOTTOM") if p.get("ISTENTINGBOTTOM") is not None else p.get("ISTENTINGTOP"))
+        if v is None:
+            return True
+        return parse_bool(v)
 
     def polygon_connect(self, a, b):
         """How pad or via `a` joins polygon copper `b`: style (relief, direct

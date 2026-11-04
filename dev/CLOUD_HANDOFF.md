@@ -34,7 +34,8 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 | Reader foundation (rebuilt: phase-6 missing) | done | `83dcf11` |
 | WP2 renderer | done | `00a2c0b` |
 | WP3 PcbDoc writer, editor, EditPlan, live backend | done offline; Altium open + live scripts UNVERIFIED | `9189a8a` |
-| WP4 pour engine | done offline; Altium reading stored pours UNVERIFIED | see git log ("pour engine") |
+| WP4 pour engine | done offline; Altium reading stored pours UNVERIFIED | `f51f28c` |
+| WP5 offline DRC | done offline; agreement with Altium's DRC UNVERIFIED | see git log ("offline DRC") |
 
 ## How to run
 
@@ -48,6 +49,8 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 - Apply an EditPlan offline: `python -m offline edit board.PcbDoc plan.json -o edited.PcbDoc [--dry-run]`
 - Same plan as live scripts: `python -m offline edit board.PcbDoc plan.json --live scripts_dir --board-path "C:\...\board.PcbDoc"`
 - Check what Altium accepts: `python dev/validate_pcbwrite.py board.PcbDoc --out folder`
+- DRC: `python -m offline drc board.PcbDoc [--json] [--box x0 y0 x1 y1] [--check Clearance Width ...] [--preset jlcpcb-2oz|pcbway-2oz|oshpark-2oz] [--copper auto|saved|repour] [--markers drc.json] [--compare-cached] [--text]`
+- Compare with Altium's DRC: `python dev/compare_drc.py offline_drc.json altium_drc.json`
 - Repour offline: `python -m offline pour board.PcbDoc [--polygon N|name] [--mode clean|sequential|saved] [--compare] [--dents] [-o out.PcbDoc --store pour|solid|unpoured] [--png pours.png] [--json]`
 - Second reader (Linux, KiCad installed): `python3.12 dev/kicad_read.py a.PcbDoc b.PcbDoc`
 - All offline tests: `python -m unittest discover -s server/tests -p "test_[!a]*.py"`.
@@ -168,16 +171,16 @@ skip over same-net pads and tracks, which are copper anyway).
 
 | Fixture | Polygons | Saved mm2 | IoU | Worst polygon | Missing mm2 | Extra mm2 | Seconds |
 |---|---|---|---|---|---|---|---|
-| HiFive1.B01 | 21 | 4118.3 | 0.9949 | 0.9871 | 0.40 | 20.80 | 1.20 |
-| eDP_adapter_dvt1 | 2 | 1719.4 | 0.9888 | 0.9854 | 1.93 | 17.52 | 2.02 |
-| Fastino_Ground_Isolator | 15 | 6515.3 | 0.9910 | 0.9256 | 46.43 | 12.20 | 1.93 |
-| issue24654 PCB1 | 2 | 4789.8 | 0.9952 | 0.9919 | 0.10 | 23.08 | 0.38 |
-| issue24847 PCB1 | 1 | 256.8 | 0.9976 | 0.9976 | 0.00 | 0.62 | 0.01 |
-| all | 41 | 17399.7 | 0.9930 | | 48.87 | 74.21 | |
+| HiFive1.B01 | 21 | 4118.3 | 0.9959 | 0.9889 | 1.36 | 15.75 | 1.49 |
+| eDP_adapter_dvt1 | 2 | 1719.4 | 0.9898 | 0.9860 | 2.60 | 15.18 | 2.03 |
+| Fastino_Ground_Isolator | 15 | 6515.3 | 0.9917 | 0.9330 | 43.43 | 10.78 | 2.02 |
+| issue24654 PCB1 | 2 | 4789.8 | 0.9956 | 0.9925 | 0.25 | 20.78 | 0.41 |
+| issue24847 PCB1 | 1 | 256.8 | 0.9976 | 0.9976 | 0.02 | 0.59 | 0.01 |
+| all | 41 | 17399.7 | 0.9937 | | 47.65 | 63.07 | |
 
 - Fastino's saved pours connect every SMD pad directly although the board's
   only PolygonConnect rule says SMD pads relief (its TH pads do have
-  reliefs). With SMD pads forced direct its IoU is 0.9970 (worst 0.977). The
+  reliefs). With SMD pads forced direct its IoU is 0.9977 (worst 0.974). The
   engine follows the rule; the saved pours look older than the rule.
 - Most of the remaining extra copper is a few micrometres along curved
   edges: Altium's arc approximation sits outside the true clearance circle
@@ -190,6 +193,10 @@ skip over same-net pads and tracks, which are copper anyway).
   past the air gap (1,200 spoke positions: 502 kept / 26 not at >= 95 %
   cover, 11 kept / 525 not below 25 %); neck removal is an opening with half
   the neck width and round joins (mitred joins regrow the cut necks).
+- Keep-outs block a pour only when their restriction mask has the copper
+  bit (Fastino's two keep-out regions are for vias and TH pads only).
+  Every clearance void gets 2 um extra so polygonal arcs never cut into a
+  gap (DRC-clean pours; it also matched Altium slightly better).
 - Not modelled: hatched pours (poured solid, flagged in the report, stored
   unpoured); copper text is its box; unused inner-layer pad removal;
   `OPTIMALVOIDROTATION`; `NECKWIDTHFROMRULE` uses the Width rule's minimum
@@ -211,6 +218,56 @@ skip over same-net pads and tracks, which are copper anyway).
 - DRC and other checks get copper from `PourEngine.effective_copper()`:
   saved copper where it exists, a fresh pour for unpoured or edited
   polygons, and a note of which it used.
+
+## WP5 notes (offline DRC)
+
+`server/offline/drc.py`, `python -m offline drc`. Rules come from Rules6 and
+resolve through scope.py / rules.py exactly as for pours (priority, both
+scope orders, per-object clearance matrix, per-layer width overrides).
+
+- Checks: Clearance (copper of different nets, keep-outs, drill holes not
+  covered by their own copper, copper text with `--text`), ShortCircuit,
+  UnRoutedNet (connect.py), Width, HoleSize, MinimumAnnularRing (geometric:
+  hole edge to pad edge on every layer), HoleToHoleClearance,
+  BoardOutlineClearance (outline and cutouts), SilkToSolderMaskClearance
+  (silk against pad mask openings; vias only when a SolderMaskExpansion rule
+  untents them) and ComponentClearance (3D body outlines and their
+  standoff/overall heights; reported as approximate).
+- Pours: `--copper auto` (default) keeps saved copper and repours unpoured
+  polygons in memory first, and the report lists which; `saved` and
+  `repour` force one or the other.
+- Behaviour decided from fixture evidence: no-net copper that touches is
+  one piece (issue24847: a no-net fill overlapping no-net pads is not in
+  Altium's saved results); keep-outs are checked against every object their
+  mask names, their own footprint's included (issue24847: Altium flagged
+  keep-out arcs against the fiducial pads of the same footprint). The mask
+  matters: on Fastino 22 track-in-keep-out hits went away once vias-and-TH-
+  pads-only keep-outs were honoured.
+- Against Altium: issue24847's file holds Altium's own DRC result (two
+  clearance violations). The offline DRC finds exactly those two and nothing
+  else of that kind (`--compare-cached`; also a unit test). No other fixture
+  stores clearance-type results.
+- Per fixture (default checks): HiFive 2 silk-to-mask + 14 component (all
+  approximate), eDP 3 clearance, Fastino 10 clearance (no-net artwork
+  regions closer than the gap) + 1 silk, issue24654 596 width (its only
+  Width rule is 10/10 mil while the diff pairs are 15 mil) + 144 silk,
+  issue24847 the 2 above. None verified against Altium beyond issue24847.
+- Arc tracks and arc region edges are approximated to 0.2 um for these
+  measurements; a violation needs to miss its limit by more than 0.5 um.
+- DFM presets for 2 oz outer copper, from each fab's own page read
+  2026-11-04 (the URL is in the report): `jlcpcb-2oz` (0.16/0.16 mm, drill
+  0.15, PTH ring 0.254, via ring 0.05, hole-to-hole 0.2 via / 0.45 pad, hole
+  to copper 0.2 via / 0.28 PTH, edge 0.2), `pcbway-2oz` (advanced table,
+  70 um, normal process: 7/8 mil, drill 0.20, ring 7 mil via / 12 mil PTH,
+  hole-to-hole 11 / 16 mil, edge 0.25), `oshpark-2oz` (2 Layer 2oz 0.8mm
+  service: 6/6 mil, drill 10 mil, ring 5 mil, holes 5 mil apart, edge
+  keepout 15 mil). Fabs change these; the preset says where to check.
+- Speed: fixtures 0.01-1.7 s; the 3,612-track stress board 1.4 s of checks
+  plus 3.0 s to pour its 48 unpoured polygons.
+- Not checked: text shapes (no glyph outlines), SilkToSilk, net antennae,
+  matched lengths and differential-pair rules, mask slivers, testpoints,
+  plane clearance (planes are not modelled as copper shapes yet), relative
+  (percent) hole-size limits, vertical clearances from real 3D models.
 
 ## UNVERIFIED (needs Altium)
 
@@ -284,6 +341,14 @@ Run these on the Altium PC, in order. Each says what passing looks like.
     open, Repour All, save as `after.PcbDoc`, then `python -m offline pour
     after.PcbDoc --mode saved --compare`. Pass: no dents left and IoU close
     to the fixture figures above.
+14. **Offline DRC agrees with Altium's.** Follow the steps at the top of
+    `dev/compare_drc.py` on a board you can lose (its own DRC run, then
+    `get_drc_violations` with max_violations=100000 saved as JSON, then
+    `python -m offline drc ... --json --copper saved`). Pass: `compare_drc`
+    shows at least 90 % agreement for Clearance, Width, HoleSize,
+    MinimumAnnularRing, HoleToHoleClearance and BoardOutlineClearance, and
+    the differences listed are explained (approximate kinds, text). Send the
+    printed table and the "only offline" / "only Altium" lists.
 
 ## Decisions made without asking
 
@@ -309,3 +374,7 @@ Run these on the Altium PC, in order. Each says what passing looks like.
 - The pour engine follows the board's PolygonConnect rule even where the
   saved pours disagree (Fastino's SMD pads); it reports the measured
   difference instead of copying the saved behaviour.
+- DRC: touching no-net copper counts as joined; text is left out unless
+  asked for; component clearance uses body outlines and is marked
+  approximate; DFM presets are added on top of the board's own rules, never
+  instead of them.

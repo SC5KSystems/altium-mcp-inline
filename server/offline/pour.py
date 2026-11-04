@@ -30,10 +30,11 @@ import time
 
 from . import geom
 from . import layers as L
-from .pcbdoc import MM_PER_UNIT, parse_bool, parse_float, parse_length
+from .pcbdoc import KEEPOUT_COPPER, MM_PER_UNIT, parse_bool, parse_float, parse_length
 from .rules import RuleSet
 
 QUAD = 8                     # buffer segments per quarter circle
+VOID_MARGIN = 0.002          # mm added to every clearance gap: polygonal arcs never cut in
 EPS_AREA = 1e-6              # mm^2: smaller slivers are geometry noise
 AREA_UNIT = MM_PER_UNIT ** 2  # AREATHRESHOLD is stored in internal units squared
 NECK_FACTOR = 0.5           # erosion radius as a fraction of the neck width
@@ -132,6 +133,8 @@ class _LayerIndex:
                 if kind == "region" and r.kind != "copper":
                     continue
                 if r.layer == L.KEEPOUT or (r.is_keepout and r.layer == layer):
+                    if not r.keepout_restrictions & KEEPOUT_COPPER:
+                        continue  # a keep-out for vias or pads only lets pours in
                     g = geom.copper_shape(r, layer)
                     if not g.is_empty:
                         items.append(_Item(r, kind, None, g, keepout=True))
@@ -311,7 +314,7 @@ class PourEngine:
                     reliefs.append((it, pc))
                     voids.append(self._relief_void(it, pc))
                 else:  # no connect: keep the clearance gap
-                    voids.append(it.shape.buffer(self._gap(probe, it), quad_segs=self.quad))
+                    voids.append(self._clear_void(it, self._gap(probe, it)))
                 continue
             if same and s.pour_over == 1:
                 if DEAD_TRACKS_CONNECT:
@@ -331,7 +334,7 @@ class PourEngine:
                     continue
             oprobe = self.probe(other)
             gap, _ = self.rules.clearance(probe, oprobe)
-            voids.append(g.buffer(gap or 0.0, quad_segs=self.quad))
+            voids.append(g.buffer((gap or 0.0) + VOID_MARGIN, quad_segs=self.quad))
 
         blocked = sh.union_all(voids) if voids else sh.Polygon()
         copper = area.difference(blocked)
@@ -395,6 +398,7 @@ class PourEngine:
         square corners when SQUARE_PAD_CLEARANCE is set."""
         if gap <= 0:
             return it.shape
+        gap += VOID_MARGIN
         if SQUARE_PAD_CLEARANCE and it.kind == "pad" and not it.hole and \
                 it.obj.shape_on(self._cur_layer)[0] in ("rect", "octagonal"):
             return it.shape.buffer(gap, join_style="mitre")
@@ -551,6 +555,31 @@ class PourEngine:
                 state[p.index] = copper[p.index] = res.copper
                 used[p.index] = "repoured"
         return copper, used
+
+    def refresh(self, policy="auto", stale=()):
+        """Make the board in memory hold current pours for checks: repour
+        what effective_copper() would repour and store it as the polygons'
+        copper. Returns {polygon: "saved" | "repoured"}."""
+        if policy not in ("auto", "saved", "repour"):
+            raise PourError(f"unknown copper policy {policy!r}")
+        saved = self.saved_copper()
+        todo = set()
+        if policy == "repour":
+            todo = {p.index for p in self.pourable()}
+        elif policy == "auto":
+            todo = set(self.unpoured()) | {int(i) for i in stale}
+        used = {i: "saved" for i in saved if i not in todo}
+        if not todo:
+            return used
+        state = {i: g for i, g in saved.items() if i not in todo}
+        results = {}
+        for p in self.order(sorted(todo)):
+            res = self.pour(p, others=state)
+            state[p.index] = res.copper
+            results[p.index] = res
+            used[p.index] = "repoured"
+        self.store(results, "pour")
+        return used
 
     # ------------------------------------------------------------ checking
     def same_net_copper(self, poly):

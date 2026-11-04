@@ -53,9 +53,12 @@ def track_shape(t, extra=0.0):
     return stadium(t.x1, t.y1, t.x2, t.y2, t.width + 2 * extra)
 
 
-def arc_shape(a, extra=0.0):
+def arc_shape(a, extra=0.0, tol=0.005):
+    """An arc track as copper. The centre line's chords cut inside the true
+    arc by at most `tol` mm, so the concave edge may sit up to `tol` too far
+    in; checks that measure gaps pass a finer tol."""
     sh = require()
-    pts = arc_points(a.cx, a.cy, a.radius, a.start_angle, a.end_angle)
+    pts = arc_points(a.cx, a.cy, a.radius, a.start_angle, a.end_angle, tol=tol)
     w = a.width + 2 * extra
     if len(pts) < 2:
         return sh.Point(a.cx, a.cy).buffer(w / 2)
@@ -132,9 +135,9 @@ def ring(points):
     return out if len(out) >= 3 else None
 
 
-def region_shape(r, extra=0.0):
+def region_shape(r, extra=0.0, arc_step_deg=5.0):
     sh = require()
-    outer = ring(r.outline())
+    outer = ring(r.outline(arc_step_deg))
     if outer is None:
         return sh.Polygon()
     holes = [h for h in (ring(x) for x in r.holes) if h]
@@ -152,12 +155,14 @@ def text_box(t):
     return _rotate(g, t.rotation, t.x, t.y)
 
 
-def copper_shape(obj, layer, extra=0.0):
+def copper_shape(obj, layer, extra=0.0, fine=False):
+    """Copper of a primitive on a layer. fine=True approximates arcs closely
+    enough (0.2 um) for clearance measurements."""
     k = obj.KIND
     if k == "track":
         return track_shape(obj, extra)
     if k == "arc":
-        return arc_shape(obj, extra)
+        return arc_shape(obj, extra, tol=0.0002 if fine else 0.005)
     if k == "via":
         return via_shape(obj, layer, extra)
     if k == "pad":
@@ -165,7 +170,7 @@ def copper_shape(obj, layer, extra=0.0):
     if k == "fill":
         return fill_shape(obj, extra)
     if k == "region":
-        return region_shape(obj, extra)
+        return region_shape(obj, extra, arc_step_deg=1.0 if fine else 5.0)
     raise ValueError(f"no copper shape for {k}")
 
 
