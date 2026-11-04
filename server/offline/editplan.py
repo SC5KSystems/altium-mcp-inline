@@ -49,6 +49,12 @@ OPS = {
     "add_net_class": (("name", "nets"), ()),
     "add_rule": (("kind", "name"), ("scope1", "scope2", "priority", "values", "enabled")),
     "set_rule_scope": (("name",), ("scope1", "scope2")),
+    "set_pad_net": (("designator", "pad", "net"), ()),
+    "set_component": (("designator", "props"), ()),
+    "place_footprint": (("designator", "footprint", "x", "y"),
+                        ("rotation", "side", "source", "nets", "comment", "source_unique_id",
+                         "props")),
+    "swap_footprint": (("designator", "footprint"), ("source",)),
 }
 XY_KEYS = {"x", "y", "x1", "y1", "x2", "y2", "cx", "cy"}
 
@@ -196,6 +202,24 @@ def run_op(ed, op):
                     a.get("priority"), a.get("values"), a.get("enabled", True))
     elif name == "set_rule_scope":
         ed.set_rule_scope(a["name"], a.get("scope1"), a.get("scope2"))
+    elif name == "set_pad_net":
+        return {"pads": ed.set_pad_net(a["designator"], a["pad"], a["net"])}
+    elif name == "set_component":
+        ed.set_component_props(a["designator"], a["props"])
+    elif name in ("place_footprint", "swap_footprint"):
+        from . import footprints as F
+        sources = a.get("source") or ed.plan_libraries
+        if isinstance(sources, (str, Path)):
+            sources = [sources]
+        fp = F.find(a["footprint"], list(sources or []))
+        if fp is None:
+            raise EditError(f"footprint {a['footprint']!r} not found in "
+                            f"{[str(x) for x in (sources or [])] or 'any source (none given)'}")
+        if name == "swap_footprint":
+            return F.swap(ed, a["designator"], fp)
+        return F.place(ed, fp, a["designator"], a["x"], a["y"], a.get("rotation", 0.0),
+                       a.get("side", "top"), a.get("nets"), a.get("comment", ""),
+                       a.get("source_unique_id"), a.get("props"))
     return {}
 
 
@@ -208,6 +232,7 @@ def apply(doc, plan):
     if probs:
         raise PlanError("; ".join(probs))
     ed = Editor(doc)
+    ed.plan_libraries = plan.get("libraries", [])
     results = []
     for i, op in enumerate(plan["ops"]):
         try:

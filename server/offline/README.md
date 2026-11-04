@@ -11,6 +11,7 @@ Read, check, edit and write Altium `.PcbDoc` files without Altium. Run from the
     python -m offline edit board.PcbDoc plan.json -o edited.PcbDoc
     python -m offline pour board.PcbDoc --compare           # repour offline, check against saved
     python -m offline drc board.PcbDoc [--preset jlcpcb-2oz] # the board's rules, without Altium
+    python -m offline eco preview board.PrjPcb               # schematic vs board, like Update PCB
 
 All lengths are millimetres. Coordinates are absolute (database) coordinates,
 Y up, as the file stores them; `PcbDoc.origin` gives the user origin.
@@ -36,6 +37,9 @@ scipy, Pillow; olefile for tests).
 | `edits.py`, `editplan.py`, `live.py` | in-memory edits, JSON EditPlans, the same plan as live scripts |
 | `pour.py` | polygon pours: clearances, reliefs, necks, islands, dead copper, pour order |
 | `drc.py` | design rule check from Rules6, fab presets for 2 oz copper, cached-result comparison |
+| `sch.py` | SchDoc/PrjPcb reader: parts, pins, footprints, the netlist |
+| `footprints.py` | PcbLib reader; footprints from a library or another board; place and swap |
+| `eco.py` | preview, link, apply (as an EditPlan), swap, gaps |
 | `synth.py` | small synthetic boards for tests |
 | `fixtures.py` | where tests find real boards |
 
@@ -67,3 +71,12 @@ masks, treats touching no-net copper as joined, and leaves text out unless
 `--text` (then each text is its box). `--compare-cached` checks against the
 DRC results Altium saved in the file; `dev/compare_drc.py` against a live
 `get_drc_violations` export.
+
+## ECO
+
+`eco preview` compares the project's netlist with the board pin by pin and
+names renames, merges, splits and single-pin moves as well as parts to add,
+remove or re-footprint. `eco apply` turns that into an EditPlan (merges first
+so tracks and pours follow) and, with `-o`, writes the board and lists the
+gaps left to route. `eco gaps` finds pieces of a net that are not joined,
+e.g. both sides of a removed part once its nets are merged.

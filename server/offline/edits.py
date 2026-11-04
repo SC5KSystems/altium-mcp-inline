@@ -101,6 +101,7 @@ class Editor:
         self.stale_pours = set()
         self.dropped_violations = 0
         self.warnings = []
+        self.plan_libraries = []
 
     # ------------------------------------------------------------ helpers
     def _note(self, msg):
@@ -450,6 +451,32 @@ class Editor:
         self.doc.invalidate()
         self._note(f"moved {count} primitives to net {self.doc.nets[n].name if n is not None else None}")
         return count
+
+    def set_pad_net(self, designator, pad, net):
+        """Put every pad named `pad` of `designator` on `net` (None: no net),
+        creating the net if needed. Returns how many pads changed."""
+        doc = self.doc
+        comp = doc.component(designator)
+        pads = [p for p in doc.pads if p.component == comp.index and p.name == str(pad)]
+        if not pads:
+            raise EditError(f"{designator} has no pad {pad!r}")
+        if net is not None and not doc.has_net(net):
+            self.add_net(net)
+        idx = None if net is None else doc.net_index(net)
+        for p in pads:
+            p.net = idx
+        self._note(f"{designator}-{pad} -> {net if net is not None else '(no net)'}")
+        return len(pads)
+
+    def set_component_props(self, designator, props):
+        """Set Components6 values (e.g. SOURCEUNIQUEID) on one component."""
+        comp = self.doc.component(designator)
+        for k, v in props.items():
+            if str(k).upper() in ("X", "Y", "ROTATION", "LAYER", "PATTERN"):
+                raise EditError(f"{k} is changed by move_component or swap_footprint, not here")
+            comp.props.set(str(k).upper(), str(v))
+        comp.props.dirty = True
+        self.doc.invalidate()
 
     def rename_net(self, old, new):
         doc = self.doc

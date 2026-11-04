@@ -1500,7 +1500,8 @@ class PcbDoc:
     def primitives(self, kinds=("track", "arc", "via", "pad", "fill", "region", "text")):
         for kind in kinds:
             for r in {"track": self.tracks, "arc": self.arcs, "via": self.vias, "pad": self.pads,
-                      "fill": self.fills, "region": self.regions, "text": self.texts}[kind]:
+                      "fill": self.fills, "region": self.regions, "text": self.texts,
+                      "body": self.bodies}[kind]:
                 yield r
 
     def copper(self, layer=None, net=None):

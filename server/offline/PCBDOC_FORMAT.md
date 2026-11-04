@@ -210,6 +210,24 @@ and `PRIM2ID`/`PRIM2INDEX` (object kind and its index in that kind's
 storage), `LOCATION1.X/Y`, `LOCATION2.X/Y`, `DESCRIPTION`. They go stale (and
 are dropped by the editor) once an edit renumbers anything.
 
+## PcbLib
+
+One storage per footprint (names cut to 31 characters; the full name is
+`PATTERN` in its Parameters stream). Its Data stream is a sub-record holding
+the name, then primitive records exactly as in a PcbDoc (type byte, then the
+same sub-records: pad 6, text 2, the rest 1), all kinds in one stream, until
+fewer than four bytes remain. Regions are plain (16-byte vertices).
+Coordinates are local to the reference point.
+
+## SchDoc
+
+FileHeader holds length-prefixed records (u32: low 24 bits length, high
+byte 0 for text); the first is the header, and `OWNERINDEX` counts from the
+record after it. Coordinates are 10 mil units plus `*_FRAC` (1e-5 unit).
+Pins are absolute: the electrical end is LOCATION plus PINLENGTH along
+`PINCONGLOMERATE & 3` (0 right, 1 up, 2 left, 3 down); `& 4` is hidden. A
+part's footprint is the current RECORD=45 under its RECORD=44.
+
 ## Preserved without being understood
 
 Kept byte for byte; listed with what could go stale after an edit:

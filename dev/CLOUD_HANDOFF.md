@@ -35,7 +35,8 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 | WP2 renderer | done | `00a2c0b` |
 | WP3 PcbDoc writer, editor, EditPlan, live backend | done offline; Altium open + live scripts UNVERIFIED | `9189a8a` |
 | WP4 pour engine | done offline; Altium reading stored pours UNVERIFIED | `f51f28c` |
-| WP5 offline DRC | done offline; agreement with Altium's DRC UNVERIFIED | see git log ("offline DRC") |
+| WP5 offline DRC | done offline; agreement with Altium's DRC UNVERIFIED | `f0b9814` |
+| WP6 offline ECO | done offline; Altium's view of ECO'd boards UNVERIFIED | see git log ("offline ECO") |
 
 ## How to run
 
@@ -51,6 +52,7 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 - Check what Altium accepts: `python dev/validate_pcbwrite.py board.PcbDoc --out folder`
 - DRC: `python -m offline drc board.PcbDoc [--json] [--box x0 y0 x1 y1] [--check Clearance Width ...] [--preset jlcpcb-2oz|pcbway-2oz|oshpark-2oz] [--copper auto|saved|repour] [--markers drc.json] [--compare-cached] [--text]`
 - Compare with Altium's DRC: `python dev/compare_drc.py offline_drc.json altium_drc.json`
+- ECO: `python -m offline eco preview board.PrjPcb [board.PcbDoc] [--json]`; `eco link board.PrjPcb board.PcbDoc -o linked.PcbDoc`; `eco apply board.PrjPcb board.PcbDoc --lib parts.PcbLib [--plan plan.json] [-o out.PcbDoc]`; `eco swap board.PcbDoc U1 NEW_FOOTPRINT --lib parts.PcbLib -o out.PcbDoc`; `eco gaps board.PcbDoc [--net VBAT]`
 - Repour offline: `python -m offline pour board.PcbDoc [--polygon N|name] [--mode clean|sequential|saved] [--compare] [--dents] [-o out.PcbDoc --store pour|solid|unpoured] [--png pours.png] [--json]`
 - Second reader (Linux, KiCad installed): `python3.12 dev/kicad_read.py a.PcbDoc b.PcbDoc`
 - All offline tests: `python -m unittest discover -s server/tests -p "test_[!a]*.py"`.
@@ -269,6 +271,44 @@ scope orders, per-object clearance matrix, per-layer width overrides).
   plane clearance (planes are not modelled as copper shapes yet), relative
   (percent) hole-size limits, vertical clearances from real 3D models.
 
+## WP6 notes (offline ECO)
+
+`footprints.py` and `schtools.py` from the missing phase-6 branch did not
+exist here, so this package adds `sch.py` (SchDoc/PrjPcb reader and
+netlister), `footprints.py` (PcbLib reader, footprints from another board,
+place and swap) and `eco.py`.
+
+- Netlist check: the eDP fixture project (2 sheets) netlists to exactly the
+  board's 112 parts and 78 nets; all 368 pins carry the same net *name* as
+  their pad, auto-generated `NetXX_n` names included, and every footprint
+  matches. `eco preview` on it reports nothing to do except one stale
+  source link (C22P), which `eco link` fixes.
+- Preview compares membership pin by pin: renames, merges (one schematic net
+  over several board nets), splits, pin moves, parts to add/remove,
+  footprint and comment changes, unmatched pins/pads, stale source links.
+  Board parts with no schematic link (no SOURCEUNIQUEID) are listed and left
+  alone unless `--remove-unlinked`.
+- Apply order: remove parts, merge nets (tracks and pours follow), rename
+  (through temporary names when names swap), move single pins, swap
+  footprints, place new parts in a column right of the board outline with
+  their nets. Comment changes are reported, not applied.
+- New EditPlan ops: `set_pad_net`, `set_component`, `place_footprint`,
+  `swap_footprint` (offline only; live.py refuses them).
+- Footprints: placing clones the library records (full pad stacks kept),
+  adds a designator and a comment text, and moves the part with the same
+  code as move_component. 3D bodies are not copied (reported). A footprint
+  not found in the given sources is reported and not placed.
+- The removed-part case from the brief: removing a two-pin part and merging
+  its nets yields one gap at the part's position with both islands' pads
+  named (test on the fixture: 0.125 mm, R10C). KiCad reads the result.
+- PcbLib reader checked on all four fixture libraries; a board with a
+  library footprint placed bottom-side and rotated, a copied footprint and a
+  swapped one passes the integrity check and reads in KiCad with the
+  expected footprint, pad and via counts.
+- Not supported (raises): hierarchical schematics (sheet symbols), binary
+  schematic records (a newer pin format). Not handled: multi-channel
+  designs, net classes from the schematic, parameters other than Comment.
+
 ## UNVERIFIED (needs Altium)
 
 Run these on the Altium PC, in order. Each says what passing looks like.
@@ -349,6 +389,15 @@ Run these on the Altium PC, in order. Each says what passing looks like.
     MinimumAnnularRing, HoleToHoleClearance and BoardOutlineClearance, and
     the differences listed are explained (approximate kinds, text). Send the
     printed table and the "only offline" / "only Altium" lists.
+15. **ECO results open and Update PCB agrees.** On a copy of a project:
+    change the schematic (remove a part, rename a net), then
+    `python -m offline eco apply X.PrjPcb X.PcbDoc --lib <its PcbLib> -o C:\scratch\eco.PcbDoc`
+    and open the result in the project in place of the board. Pass: no
+    dialog; Design > Update PCB Document shows no changes for the edits made
+    (only comment changes, which apply leaves alone); placed footprints look
+    right and carry their nets. Also run `eco link` on a board whose parts
+    were re-symbolled and check Update PCB no longer offers to remove and
+    re-add them.
 
 ## Decisions made without asking
 
@@ -378,3 +427,7 @@ Run these on the Altium PC, in order. Each says what passing looks like.
   asked for; component clearance uses body outlines and is marked
   approximate; DFM presets are added on top of the board's own rules, never
   instead of them.
+- ECO: parts match by designator; a multi-unit part is linked if the board
+  names any unit's unique id; `eco link` writes the lowest unit's id.
+- Placed and swapped parts do not get 3D bodies; their models live in the
+  library, so Altium's own Update from Libraries is the way to add them.
