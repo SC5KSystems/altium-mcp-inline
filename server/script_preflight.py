@@ -539,6 +539,13 @@ def check(body, sandbox_pas=SERVER_SANDBOX, corpus=None, allow_unknown=False):
             near = _nearest(t.low, vocab.bare_candidates())
             soft.append(_problem(t, f"unknown name '{t.text}'", ", ".join(near) or None, t.text))
 
+    for t in toks:
+        if t.kind == "ident" and t.low == "exit":
+            msg = ("Exit leaves procedure Run before ResultText is written, so a healthy run "
+                   "looks wedged; use if/else instead")
+            (errors if Path(sandbox_pas).resolve() == SERVER_SANDBOX.resolve() else warnings
+             ).append(_problem(t, msg, name="Exit"))
+            break
     _flow_checks(toks, vocab, errors, warnings)
     return {"ok": not errors, "errors": errors, "warnings": warnings, "sandbox": vocab.label}
 

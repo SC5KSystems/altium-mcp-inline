@@ -114,7 +114,7 @@ def check_integrity(doc):
                 p = NONE16
             if n != NONE16 and n >= nn:
                 probs.append(f"{st.name}[{r.index}] net index {n} >= {nn} nets")
-            if c != NONE16 and c >= nc and r.KIND != "via":
+            if c != NONE16 and c >= nc:
                 probs.append(f"{st.name}[{r.index}] component index {c} >= {nc} components")
             if p not in (NONE16, BOARD16) and p >= npoly:
                 probs.append(f"{st.name}[{r.index}] polygon index {p} >= {npoly} polygons")
@@ -175,6 +175,51 @@ def check_integrity(doc):
                 if r.index != i:
                     probs.append(f"{name}[{i}] carries index {r.index}")
                     break
+    probs += _index_table_problems(doc)
+    return probs
+
+
+GUID_KINDS = {0x0D01: "Arcs6", 0x0E02: "Pads6", 0x0F03: "Vias6", 0x1004: "Tracks6",
+              0x1105: "Texts6", 0x1206: "Fills6", 0x1359: "Regions6",
+              0x1459: "ShapeBasedRegions6", 0x155A: "ComponentBodies6",
+              0x165A: "ShapeBasedComponentBodies6", 0x0208: "Nets6", 0x0309: "Components6",
+              0x040A: "Polygons6", 0x0116: "Classes6", 0x050B: "Dimensions6"}
+PADVIA_KINDS = {2: "Pads6", 3: "Vias6"}
+OBJECT_STORAGE = {"Track": "Tracks6", "Arc": "Arcs6", "Via": "Vias6", "Pad": "Pads6",
+                  "Fill": "Fills6", "Region": "Regions6", "Text": "Texts6",
+                  "ComponentBody": "ComponentBodies6"}
+
+
+def _count(doc, storage):
+    st = doc.storages.get(storage)
+    return len(st.records) if st else 0
+
+
+def _index_table_problems(doc):
+    probs = []
+    st = doc.storages.get("PrimitiveGuids")
+    for e in (st.records if st else []):
+        kind, idx = struct.unpack_from("<II", e, 0)
+        name = GUID_KINDS.get(kind)
+        if name and idx >= _count(doc, name):
+            probs.append(f"PrimitiveGuids entry {name}[{idx}] past {_count(doc, name)} records")
+            break
+    st = doc.storages.get("PadViaCacheLibraryLinksSection")
+    for e in (st.records if st else []):
+        idx, kind = struct.unpack_from("<I", e, 1)[0], e[5]
+        name = PADVIA_KINDS.get(kind)
+        if name and idx >= _count(doc, name):
+            probs.append(f"PadViaCacheLibraryLinksSection entry {name}[{idx}] past the end")
+            break
+    for sname, key_obj in (("ExtendedPrimitiveInformation", "PRIMITIVEOBJECTID"),
+                           ("SharedUnion", "OBJECTID"), ("CustomMaskShapes", None)):
+        st = doc.storages.get(sname)
+        for r in (st.records if st else []):
+            name = OBJECT_STORAGE.get(r.get(key_obj, "")) if key_obj else "Pads6"
+            idx = int(parse_float(r.get("PRIMITIVEINDEX", "-1"), -1))
+            if name and not 0 <= idx < _count(doc, name):
+                probs.append(f"{sname} cites {name}[{idx}] past {_count(doc, name)} records")
+                break
     return probs
 
 

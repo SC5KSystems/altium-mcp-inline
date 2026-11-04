@@ -32,7 +32,8 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 |---|---|---|
 | WP1 script preflight + unwedge | done (offline tests); live UNVERIFIED | `bf2d5e8` |
 | Reader foundation (rebuilt: phase-6 missing) | done | `83dcf11` |
-| WP2 renderer | done | see git log |
+| WP2 renderer | done | `00a2c0b` |
+| WP3 PcbDoc writer, editor, EditPlan, live backend | done offline; Altium open + live scripts UNVERIFIED | see git log ("Add the PcbDoc writer") |
 
 ## How to run
 
@@ -43,6 +44,10 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 - Render: `python -m offline render board.PcbDoc -o out.png|svg [--layers ...] [--net VBAT] [--around U5 --margin 10 | --box x0 y0 x1 y1] [--ratsnest] [--markers drc.json] [--pdn VBAT --source J1.1 --sink U5.3 --current 30] [--diff other.PcbDoc]`
 - PDN: `python -m offline pdn board.PcbDoc --net VBAT --source J1.1 --sink U5.3 --current 30 [--png heat.png]`
 - Connectivity: `python -m offline connect board.PcbDoc`
+- Apply an EditPlan offline: `python -m offline edit board.PcbDoc plan.json -o edited.PcbDoc [--dry-run]`
+- Same plan as live scripts: `python -m offline edit board.PcbDoc plan.json --live scripts_dir --board-path "C:\...\board.PcbDoc"`
+- Check what Altium accepts: `python dev/validate_pcbwrite.py board.PcbDoc --out folder`
+- Second reader (Linux, KiCad installed): `python3.12 dev/kicad_read.py a.PcbDoc b.PcbDoc`
 - All offline tests: `python -m unittest discover -s server/tests -p "test_[!a]*.py"`.
   The pattern leaves out `test_altium_script.py`, the pre-existing live
   integration test, which errors at setUpClass on any machine without
@@ -97,6 +102,54 @@ its own (even-odd over its own rings), so holes never blank other copper.
   user path and a project; they now hold a placeholder. The old text is still
   in git history.
 
+## WP3 notes (writer, editor, EditPlan, live backend)
+
+- Format facts and every cross-reference the editor keeps consistent are in
+  `server/offline/PCBDOC_FORMAT.md`.
+- `cfb_write.py` rewrites the compound file. When the set of streams is
+  unchanged it keeps the source's directory (names, CLSIDs, timestamps, tree)
+  and only re-lays sectors. Writers refuse to write onto their input
+  (`pcbwrite.save`, `cfb_write.write`, `Editor.save`, the `edit` CLI).
+- `pcbwrite.save` re-parses what it wrote and runs `check_integrity` before
+  and after; it raises (and leaves no file) when a count or reference is off.
+- Edits (`edits.Editor`): select/remove primitives, add track/arc/via/fill/
+  region/text/pad, add/rename/merge/remove nets, set_net, add/remove/move/
+  rotate/flip components, add/remove/unpour/reshape polygons, merge two
+  polygons, add net classes and rules, change rule scopes. EditPlan JSON
+  (`editplan.py`) wraps the same ops; `--dry-run` applies in memory and
+  reports. Ops and fields: `editplan.OPS`.
+- Acceptance, measured here:
+  - No-op save: every stream byte-identical on all 7 fixture PcbDocs.
+  - Single edits change only the streams they must (test asserts the set).
+  - KiCad 7's Altium importer (independent code) reads every no-op save
+    with the same counts as the original, and sees each edit (component
+    removed with its pads and owned vias, track and via added, net renamed).
+    Test: `server/tests/test_offline_kicad.py` (skips without pcbnew).
+  - `dev/validate_pcbwrite.py` on a copy of the Fastino fixture: all 16
+    single-edit files and the cumulative file written; KiCad reads each with
+    the expected change (track +1, via +1, fill +1 zone, arc +1, text +1,
+    pad +1, region +1, component -1 with 2 pads, merged net -1, unpoured
+    polygon -1 filled zone). Altium has not opened any of them.
+- Live backend (`live.py`): one DelphiScript body per op for
+  `run_altium_script`, written with a `manifest.json`. Every body passes
+  the preflight against `server/SandboxScript/Sandbox.pas`. Given the saved
+  board, `remove` and `set_net` bodies first count their selection and
+  refuse (changing nothing) if the live board differs. `proven: false` in
+  the manifest marks bodies using calls never run on a live board (arcs,
+  regions, texts, component removal, polygon lookup by name, net classes).
+  Ops without a safe live form (add_pad, add_component, add_net,
+  remove_net, add_polygon, set_polygon, merge_polygons, add_rule) raise and
+  say to apply them offline.
+- `set_polygon_outline` live needs `Seg : TPolySegment;` in the var section
+  of `server/SandboxScript/Sandbox.pas`. Not added: the template is shared by
+  every sandbox body, and a change can't be compiled here. Add it by hand if
+  you want that op live.
+- Cached DRC results (`*Violation` storages) cite objects by index; when an
+  edit renumbers anything they are dropped. Altium rebuilds them on the next
+  DRC; the report says how many were dropped.
+- Streams this code does not parse are carried through byte for byte (list:
+  `PcbDoc.unparsed()`); an edit that would need to change one raises.
+
 ## UNVERIFIED (needs Altium)
 
 Run these on the Altium PC, in order. Each says what passing looks like.
@@ -132,6 +185,30 @@ Run these on the Altium PC, in order. Each says what passing looks like.
    sandbox project as well, so a sandbox probe proves the whole engine runs.
    If a bridge tool times out, `recover_altium_script_engine` reports
    recovered, and the next bridge tool still times out, this is false.
+8. **Altium opens what the writer writes.** Copy any board you can lose to a
+   local folder (not N:), then
+   `python dev\validate_pcbwrite.py C:\scratch\copy\board.PcbDoc --out C:\scratch\pcbwrite_check`.
+   Open the files it lists, in order, with File > Open (not from a
+   project); for each, note OPENED (no dialog), DIALOG (paste its text) or
+   WRONG (opened but the printed check line is false). Close without
+   saving. Pass: every file OPENED and every check holds, including
+   `step99_all`. On failure: the first DIALOG/WRONG names one edit;
+   `steps.json` has the targets. Send the step name, the dialog text and,
+   if possible, the file; the suspect is that edit's storage in
+   `pcbwrite.py`/`edits.py` (PCBDOC_FORMAT.md says what each touches).
+9. **Altium agrees after a repour and DRC.** On `step99_all`: Tools >
+   Polygon Pours > Repour All, then Tools > Design Rule Check. Pass: no
+   crash, the pours fill, and DRC reports only violations explained by the
+   test edits (the added track/via/fill/arc/pad/region on one net, the moved
+   and flipped parts, the removed part's now-unconnected nets).
+10. **Live scripts.** Open a scratch copy of a board in Altium. Write a plan
+    with one `add_track` on a known net and one `rename_net`, then
+    `python -m offline edit board.PcbDoc plan.json --live C:\scratch\live --board-path "<the path Altium shows>"`.
+    Run each `.pas` body in `manifest.json` order through
+    `run_altium_script`. Pass: each returns its manifest `expect` (e.g.
+    `{"created": 1}`), the track appears, the net is renamed, and
+    `999_save.pas` saves. Bodies with `"proven": false` are the ones to
+    watch; if one fails, paste its result and the body.
 
 ## Decisions made without asking
 
@@ -142,3 +219,14 @@ Run these on the Altium PC, in order. Each says what passing looks like.
   Altium.
 - `GetCurrentPCBBoard` in a sandbox body is an error (overridable), because
   the brief records it wedging Altium in the sandbox.
+- New primitives get a fresh PrimitiveGuids entry (random GUID) and, for
+  pads, a new random 8-letter unique id, as Altium writes them.
+- `remove_component` removes the vias a component owns (field @7) as well;
+  `keep_copper` keeps its free-standing tracks, arcs, fills and vias as free
+  copper.
+- Offline `merge_nets` deletes the emptied source nets; the live script
+  leaves them (deleting a net live is not proven).
+- `merge_polygons` keeps the polygon whose outline overlaps another net's
+  polygon (keeps that pour order); when both do it keeps the first and says
+  to check Polygon Pour Order.
+- The sandbox template was not changed to add a `TPolySegment` variable.

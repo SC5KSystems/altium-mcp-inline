@@ -1171,7 +1171,15 @@ PROPS = {
     "Board6": 0, "Nets6": 0, "Components6": 0, "Polygons6": 0, "Classes6": 0, "Rules6": 2,
     "Dimensions6": 2, "UniqueIDPrimitiveInformation": 0, "PrimitiveParameters": 0,
     "DifferentialPairs6": 0, "SmartUnions": 0, "SignalClasses": 0,
+    "ExtendedPrimitiveInformation": 0, "CustomMaskShapes": 0, "SharedUnion": 0,
 }
+# Fixed-size binary tables keyed by object index (see PCBDOC_FORMAT.md).
+TABLES = {"PrimitiveGuids": 24, "PadViaCacheLibraryLinksSection": 10}
+
+
+def is_violation_storage(name):
+    """Cached DRC results (TClearanceViolation, ...): they cite objects by index."""
+    return name.startswith("T") and "Viola" in name
 
 
 class Storage:
@@ -1187,6 +1195,8 @@ class Storage:
                                 struct.unpack("<I", header)[0] == len(records))
 
     def encode_data(self):
+        if self.kind == "table":
+            return b"".join(bytes(r) for r in self.records)
         return b"".join(r.encode() for r in self.records)
 
 
@@ -1287,6 +1297,15 @@ class PcbDoc:
             elif name in PROPS:
                 recs = split_props(data, PROPS[name])
                 self.storages[name] = Storage(name, "props", header, recs, data)
+            elif name in TABLES:
+                size = TABLES[name]
+                if len(data) % size:
+                    raise FormatError(f"{name}: {len(data)} bytes is not a whole number of "
+                                      f"{size}-byte entries")
+                recs = [bytearray(data[i:i + size]) for i in range(0, len(data), size)]
+                self.storages[name] = Storage(name, "table", header, recs, data)
+            elif is_violation_storage(name):
+                self.storages[name] = Storage(name, "props", header, split_props(data), data)
             elif name == "WideStrings6":
                 table, order = parse_widestrings(data)
                 self.widestring_order = order

@@ -1,10 +1,9 @@
 // Rename a net (proven 2026-11-02).
 Obj1 := PCBServer.GetPCBBoardByPath('C:\scratch\scratch.PcbDoc');
 if Obj1 = nil then
+    ResultText := '{"error": "board not open"}'
+else
 begin
-    ResultText := '{"error": "board not open"}';
-    Exit;
-end;
 Obj2 := Obj1.BoardIterator_Create;
 Obj2.AddFilter_ObjectSet(MkSet(eNetObject));
 Obj2.AddFilter_LayerSet(AllLayers);
@@ -24,3 +23,4 @@ begin
 end;
 Obj1.BoardIterator_Destroy(Obj2);
 ResultText := '{"renamed": ' + IntToStr(I1) + '}';
+end;
