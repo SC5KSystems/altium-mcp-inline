@@ -31,13 +31,18 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 | Package | State | Commit |
 |---|---|---|
 | WP1 script preflight + unwedge | done (offline tests); live UNVERIFIED | `bf2d5e8` |
-| Reader foundation (rebuilt: phase-6 missing) | done | see git log |
+| Reader foundation (rebuilt: phase-6 missing) | done | `83dcf11` |
+| WP2 renderer | done | see git log |
 
 ## How to run
 
 - Preflight a body by hand: `python server/script_preflight.py body.pas [--sandbox dev/sandbox/Sandbox.pas] [--allow-unknown]`
 - Recover a wedged executor: `python dev/unwedge.py [--project dev]`; state only: `python dev/unwedge.py --status`
 - Fetch fixtures: `python dev/fetch_fixtures.py [--list]`
+- Offline tools run from `server/`: `python -m offline <command> --help`
+- Render: `python -m offline render board.PcbDoc -o out.png|svg [--layers ...] [--net VBAT] [--around U5 --margin 10 | --box x0 y0 x1 y1] [--ratsnest] [--markers drc.json] [--pdn VBAT --source J1.1 --sink U5.3 --current 30] [--diff other.PcbDoc]`
+- PDN: `python -m offline pdn board.PcbDoc --net VBAT --source J1.1 --sink U5.3 --current 30 [--png heat.png]`
+- Connectivity: `python -m offline connect board.PcbDoc`
 - All offline tests: `python -m unittest discover -s server/tests -p "test_[!a]*.py"`.
   The pattern leaves out `test_altium_script.py`, the pre-existing live
   integration test, which errors at setUpClass on any machine without
