@@ -210,3 +210,97 @@ class Synth:
         doc = self.build()
         pcbwrite.save(doc, path)
         return PcbDoc.open(path)
+
+
+def stress_board(seed=1):
+    """A large two-layer board for speed tests, laid out pseudo-randomly but
+    deterministically: 120 x 100 mm, about 3,200 tracks, 500 arcs, 480 pads,
+    300 vias and 48 polygons on four power nets. Not a real design.
+    """
+    import random
+    rnd = random.Random(seed)
+    s = Synth(120.0, 100.0, layers=2, copper_mm=0.07)
+    s.rule("Clearance", "Clearance", GAP=0.2)
+    s.rule("Width", "Width", MINLIMIT=0.15, MAXLIMIT=10, PREFEREDWIDTH=0.3)
+    s.rule("PolygonConnect", "PolygonConnect", CONNECTSTYLE="Relief", RELIEFCONDUCTORWIDTH=0.3,
+           RELIEFENTRIES="4", POLYGONRELIEFANGLE="90 Angle", AIRGAPWIDTH=0.25)
+    power = ["GND", "VIN", "VOUT", "VAUX"]
+    for n in power:
+        s.net(n)
+    signals = [f"S{i}" for i in range(200)]
+    for n in signals:
+        s.net(n)
+    pads = {}   # net -> [(x, y, layer)]
+    cols, rows, cw, ch = 16, 10, 7.2, 9.6
+    n_part = 0
+    for r in range(rows):
+        for c in range(cols):
+            x0, y0 = 4.0 + c * cw, 4.0 + r * ch
+            n_part += 1
+            if (r * cols + c) % 8 == 3:          # a SOIC-8 in one cell of eight
+                des = f"U{n_part}"
+                s.component(des, "SOIC8", x0 + 2.5, y0 + 3.0)
+                for k in range(8):
+                    px = x0 + 0.6 + (k % 4) * 1.27
+                    py = y0 + (0.8 if k < 4 else 5.2)
+                    net = rnd.choice(signals) if k not in (3, 4) else power[k % 2]
+                    s.pad(des, str(k + 1), px, py, 0.6, 1.5, net=net)
+                    pads.setdefault(net, []).append((px, py, "Top Layer"))
+            else:
+                des = f"R{n_part}"
+                rot = rnd.choice((0.0, 90.0))
+                cx, cy = x0 + 2.5, y0 + 3.0
+                s.component(des, "R0805", cx, cy, rotation=rot)
+                for k, sgn in enumerate((-1, 1)):
+                    px, py = (cx + sgn * 1.0, cy) if rot == 0 else (cx, cy + sgn * 1.0)
+                    net = rnd.choice(power) if k == 1 and rnd.random() < 0.6 else rnd.choice(signals)
+                    s.pad(des, str(k + 1), px, py, 1.0, 1.2, rotation=rot, net=net)
+                    pads.setdefault(net, []).append((px, py, "Top Layer"))
+    for j, (jx, jy) in enumerate(((60.0, 2.0), (60.0, 98.0))):
+        des = f"J{j + 1}"
+        s.component(des, "HDR20", jx, jy)
+        for k in range(20):
+            px = jx - 24.13 + k * 2.54
+            net = power[k % 4] if k % 5 == 0 else rnd.choice(signals)
+            s.pad(des, str(k + 1), px, jy, 1.7, 1.7, layer="MULTILAYER", shape="round", hole=1.0,
+                  net=net)
+            pads.setdefault(net, []).append((px, jy, "Top Layer"))
+    tracks = arcs = vias = 0
+    for net, pts in pads.items():
+        if net in power or len(pts) < 2:
+            continue
+        for (xa, ya, _), (xb, yb, _) in zip(pts, pts[1:]):
+            layer = rnd.choice(("Top Layer", "Bottom Layer"))
+            if layer == "Bottom Layer":
+                s.via(xa + 0.8, ya, 0.6, 0.3, net=net)
+                s.via(xb + 0.8, yb, 0.6, 0.3, net=net)
+                vias += 2
+                xa += 0.8
+                xb += 0.8
+            # a route in short segments, with a rounded corner
+            steps = 7
+            xm = xa + (xb - xa) * rnd.uniform(0.3, 0.7)
+            pts_route = [(xa + (xm - xa) * i / steps, ya) for i in range(steps + 1)]
+            pts_route += [(xm, ya + (yb - ya) * i / steps) for i in range(1, steps + 1)]
+            pts_route += [(xm + (xb - xm) * i / steps, yb) for i in range(1, steps + 1)]
+            for (x1, y1), (x2, y2) in zip(pts_route, pts_route[1:]):
+                if abs(x1 - x2) + abs(y1 - y2) > 1e-6:
+                    s.track(layer, x1, y1, x2, y2, 0.25, net=net)
+                    tracks += 1
+            for a0 in (0.0, 90.0, 180.0):
+                if arcs < 500:
+                    s.arc(layer, xm, ya, 0.5, a0, a0 + 90.0, 0.25, net=net)
+                    arcs += 1
+    while vias < 300:                            # ground stitching
+        s.via(rnd.uniform(3, 117), rnd.uniform(3, 97), 0.6, 0.3, net="GND")
+        vias += 1
+    k = 0
+    for layer in ("Top Layer", "Bottom Layer"):
+        for r in range(4):
+            for c in range(6):
+                x0, y0 = 1.0 + c * 19.6, 1.0 + r * 24.5
+                outline = [(x0, y0), (x0 + 20.0, y0), (x0 + 20.0, y0 + 25.0), (x0, y0 + 25.0)]
+                s.polygon(layer, outline, net=power[(r + c + k) % 4], pour_index=k,
+                          remove_necks=True, neck_width=0.127, island_area_mm2=1.0)
+                k += 1
+    return s

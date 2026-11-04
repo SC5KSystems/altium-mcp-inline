@@ -98,6 +98,24 @@ class KicadCrossCheck(unittest.TestCase):
                 self.assertIn("RENAMED_BY_TEST", b["net_names"])
                 self.assertNotIn(comp.designator, b["references"])
 
+    def test_stored_pours_read_the_same(self):
+        from offline.pour import PourEngine
+        pairs = []
+        for f in fixtures.boards():
+            doc = PcbDoc.open(f)
+            eng = PourEngine(doc)
+            if not eng.pourable():
+                continue
+            out = self.dir / f"poured_{f.parent.name}_{f.name}"
+            eng.store(eng.repour_all("clean"), "pour").save(out)
+            pairs.append((f, out))
+        res = kicad_counts(*[p for pair in pairs for p in pair])
+        for f, out in pairs:
+            with self.subTest(f.name):
+                a, b = res[str(f)], res[str(out)]
+                self.assertNotIn("error", b, b)
+                self.assertEqual(a, b)
+
 
 if __name__ == "__main__":
     unittest.main()

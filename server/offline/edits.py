@@ -395,6 +395,12 @@ class Editor:
     def add_region(self, layer, outline, holes=(), net=None, kind=0):
         return self.add(R.region(self.doc, layer, outline, holes, self.net_index(net), kind=kind))
 
+    def add_poured_region(self, poly, outline, holes=()):
+        """Poured copper of a polygon; its net is the polygon's."""
+        i = self.polygon_index(poly)
+        return self.add(R.region(self.doc, self.doc.polygons[i].layer, outline, holes, None,
+                                 polygon=i))
+
     def add_text(self, text, x, y, height, layer="Top Overlay", rotation=0.0):
         return self.add(R.text(self.doc, text, x, y, height, layer, rotation))
 
@@ -768,10 +774,10 @@ class Editor:
 
         The outlines are unioned (with any same-net fill that bridges them,
         which is then deleted). The survivor keeps its own settings and pour
-        index: it is the one whose outline overlaps another net's polygon on
-        the layer, so that pour order is kept; `a` when both or neither do
-        (both: a note says which order may change). The other polygon goes;
-        the survivor needs a repour.
+        index: when either polygon overlaps another net's polygon on the
+        layer it is the one with the higher pour index, otherwise `a`. The
+        other polygon goes; the survivor needs a repour. Notes name the
+        neighbours whose pour order may change.
         """
         sh = geom.require()
         doc = self.doc
@@ -797,12 +803,15 @@ class Editor:
                   if q.layer == pa.layer and q.net != pa.net and q.index not in (ia, ib)]
         near_a = [q.index for q, g in others if g.intersects(ga)]
         near_b = [q.index for q, g in others if g.intersects(gb)]
-        keep, drop = (ib, ia) if near_b and not near_a else (ia, ib)
-        if near_a and near_b:
-            self._note(f"both polygons overlap other nets' polygons ({near_a} and {near_b}); "
-                       f"the merged one keeps polygon {ia}'s pour order, check Polygon Pour Order")
         new_near = [q.index for q, g in others if g.intersects(merged)
                     and q.index not in near_a + near_b]
+        keep, drop = (ia, ib)
+        if (near_a or near_b) and pb.pour_index > pa.pour_index:
+            keep, drop = ib, ia
+        lost = near_a if keep == ib else near_b
+        if lost:
+            self._note(f"polygons {lost} overlapped the polygon that goes; the merged one pours "
+                       f"in polygon {keep}'s place, check Polygon Pour Order")
         if new_near:
             self._note(f"the merged outline now overlaps polygons {new_near}; check pour order")
         pts = list(merged.exterior.coords)[:-1]

@@ -33,7 +33,8 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 | WP1 script preflight + unwedge | done (offline tests); live UNVERIFIED | `bf2d5e8` |
 | Reader foundation (rebuilt: phase-6 missing) | done | `83dcf11` |
 | WP2 renderer | done | `00a2c0b` |
-| WP3 PcbDoc writer, editor, EditPlan, live backend | done offline; Altium open + live scripts UNVERIFIED | see git log ("Add the PcbDoc writer") |
+| WP3 PcbDoc writer, editor, EditPlan, live backend | done offline; Altium open + live scripts UNVERIFIED | `9189a8a` |
+| WP4 pour engine | done offline; Altium reading stored pours UNVERIFIED | see git log ("pour engine") |
 
 ## How to run
 
@@ -47,6 +48,7 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 - Apply an EditPlan offline: `python -m offline edit board.PcbDoc plan.json -o edited.PcbDoc [--dry-run]`
 - Same plan as live scripts: `python -m offline edit board.PcbDoc plan.json --live scripts_dir --board-path "C:\...\board.PcbDoc"`
 - Check what Altium accepts: `python dev/validate_pcbwrite.py board.PcbDoc --out folder`
+- Repour offline: `python -m offline pour board.PcbDoc [--polygon N|name] [--mode clean|sequential|saved] [--compare] [--dents] [-o out.PcbDoc --store pour|solid|unpoured] [--png pours.png] [--json]`
 - Second reader (Linux, KiCad installed): `python3.12 dev/kicad_read.py a.PcbDoc b.PcbDoc`
 - All offline tests: `python -m unittest discover -s server/tests -p "test_[!a]*.py"`.
   The pattern leaves out `test_altium_script.py`, the pre-existing live
@@ -150,6 +152,66 @@ its own (even-odd over its own rings), so holes never blank other copper.
 - Streams this code does not parse are carried through byte for byte (list:
   `PcbDoc.unparsed()`); an edit that would need to change one raises.
 
+## WP4 notes (pour engine)
+
+`server/offline/pour.py`. Each polygon is poured from its own settings and
+the board's rules: outline, board outline at BoardOutlineClearance, polygon
+cutouts, keep-outs, other-net objects at the clearance rule's gap for poured
+copper, same-net objects by pour-over style, pads/vias by PolygonConnect
+(including the newer per-object THPAD./SMDPAD./VIA. settings), relief spokes,
+neck removal, islands under the area threshold, dead copper, pour order.
+
+Accuracy: every fixture polygon poured against the rest of the board as
+saved (`--mode saved --compare`), compared with the copper Altium saved.
+Copper of the polygon's own net is left out on both sides (Altium's regions
+skip over same-net pads and tracks, which are copper anyway).
+
+| Fixture | Polygons | Saved mm2 | IoU | Worst polygon | Missing mm2 | Extra mm2 | Seconds |
+|---|---|---|---|---|---|---|---|
+| HiFive1.B01 | 21 | 4118.3 | 0.9949 | 0.9871 | 0.40 | 20.80 | 1.20 |
+| eDP_adapter_dvt1 | 2 | 1719.4 | 0.9888 | 0.9854 | 1.93 | 17.52 | 2.02 |
+| Fastino_Ground_Isolator | 15 | 6515.3 | 0.9910 | 0.9256 | 46.43 | 12.20 | 1.93 |
+| issue24654 PCB1 | 2 | 4789.8 | 0.9952 | 0.9919 | 0.10 | 23.08 | 0.38 |
+| issue24847 PCB1 | 1 | 256.8 | 0.9976 | 0.9976 | 0.00 | 0.62 | 0.01 |
+| all | 41 | 17399.7 | 0.9930 | | 48.87 | 74.21 | |
+
+- Fastino's saved pours connect every SMD pad directly although the board's
+  only PolygonConnect rule says SMD pads relief (its TH pads do have
+  reliefs). With SMD pads forced direct its IoU is 0.9970 (worst 0.977). The
+  engine follows the rule; the saved pours look older than the rule.
+- Most of the remaining extra copper is a few micrometres along curved
+  edges: Altium's arc approximation sits outside the true clearance circle
+  (vertices out, chords tangent), ours on it. issue24654 also keeps about
+  0.008 mm more than its rule on every gap; nothing in the file says why.
+- Rules found by measuring the fixture pours and built in: gap = clearance
+  rule for a poured region (Poly class) exactly; relief air gaps and
+  clearance gaps around rectangular pads have square corners; a spoke is
+  placed when pour copper covers its continuation for half a conductor width
+  past the air gap (1,200 spoke positions: 502 kept / 26 not at >= 95 %
+  cover, 11 kept / 525 not below 25 %); neck removal is an opening with half
+  the neck width and round joins (mitred joins regrow the cut necks).
+- Not modelled: hatched pours (poured solid, flagged in the report, stored
+  unpoured); copper text is its box; unused inner-layer pad removal;
+  `OPTIMALVOIDROTATION`; `NECKWIDTHFROMRULE` uses the Width rule's minimum
+  (a guess, no fixture shows it). Split planes are not pours (connect.py
+  models planes).
+- Pour order: `--mode sequential` replays Repour All from the saved copper
+  (each pour avoids whatever the others hold at that moment); `--mode clean`
+  starts from nothing. `--dents` lists where they differ, and `--store
+  unpoured -o out.PcbDoc` writes the board with those pours stripped so
+  Altium's Repour All starts clean (the fill-and-rebuild dance in the brief
+  is not needed then; UNVERIFIED).
+- Speed: a 120 x 100 mm synthetic board with 3,612 tracks, 500 arcs, 480
+  pads, 300 vias and 48 polygons (`synth.stress_board()`) repours in 2.4 s;
+  the dent check (two full runs) in 5 s. Every fixture board repours in
+  under 2.1 s.
+- After a clean offline repour of every fixture board, stored as pours,
+  connectivity is unchanged (all nets one island, 0 shorts, 0 dead copper)
+  and KiCad reads each board with the same counts as the original.
+- DRC and other checks get copper from `PourEngine.effective_copper()`:
+  saved copper where it exists, a fresh pour for unpoured or edited
+  polygons, and a note of which it used.
+
 ## UNVERIFIED (needs Altium)
 
 Run these on the Altium PC, in order. Each says what passing looks like.
@@ -209,6 +271,19 @@ Run these on the Altium PC, in order. Each says what passing looks like.
     `{"created": 1}`), the track appears, the net is renamed, and
     `999_save.pas` saves. Bodies with `"proven": false` are the ones to
     watch; if one fails, paste its result and the body.
+11. **Altium reads pours written offline.** On a copy of a board:
+    `python -m offline pour C:\scratch\copy\board.PcbDoc -o C:\scratch\poured.PcbDoc --store pour`.
+    Open `poured.PcbDoc`. Pass: no dialog; the pours look like the
+    original's; Tools > Polygon Pours > Repour All changes little (compare
+    with `python -m offline render`). Fail: paste the dialog text.
+12. **Solid store.** Same with `--store solid`. Pass: the PCB panel lists no
+    polygons, the copper is there as regions on the right nets, DRC shows no
+    new clearance errors.
+13. **Dent fix.** On a board where `python -m offline pour board.PcbDoc
+    --dents` lists dents: `--store unpoured -o C:\scratch\fixed.PcbDoc`,
+    open, Repour All, save as `after.PcbDoc`, then `python -m offline pour
+    after.PcbDoc --mode saved --compare`. Pass: no dents left and IoU close
+    to the fixture figures above.
 
 ## Decisions made without asking
 
@@ -226,7 +301,11 @@ Run these on the Altium PC, in order. Each says what passing looks like.
   copper.
 - Offline `merge_nets` deletes the emptied source nets; the live script
   leaves them (deleting a net live is not proven).
-- `merge_polygons` keeps the polygon whose outline overlaps another net's
-  polygon (keeps that pour order); when both do it keeps the first and says
-  to check Polygon Pour Order.
+- `merge_polygons` follows the brief: when either polygon overlaps another
+  net's polygon the one with the higher pour index survives (keeping its
+  settings), otherwise the first named. Its report names the neighbours
+  whose pour order may change.
 - The sandbox template was not changed to add a `TPolySegment` variable.
+- The pour engine follows the board's PolygonConnect rule even where the
+  saved pours disagree (Fastino's SMD pads); it reports the measured
+  difference instead of copying the saved behaviour.

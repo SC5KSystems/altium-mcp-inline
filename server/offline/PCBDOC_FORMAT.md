@@ -169,6 +169,31 @@ regions; a plane without them carries `PLANEnNETNAME` over the board. Tracks
 on plane layers are split lines (polygon field 0xFFFE when they bound the
 plane).
 
+## Polygons and poured copper
+
+Polygons6 text records hold the outline (`KINDn VXn VYn CXn CYn SAn EAn Rn`)
+and the pour settings: `POURINDEX` (pour order), `HATCHSTYLE`, `GRIDSIZE`,
+`TRACKWIDTH`, `POUROVERSTYLE` (0 don't pour over same-net objects, 1 pour
+over all of them, 2 same-net polygons only; older files only `POUROVER`),
+`REMOVEDEAD`, `REMOVEISLANDSBYAREA` with `AREATHRESHOLD` in internal units
+squared (2.5e11 = 2500 sq mil), `REMOVENECKS` with `NECKWIDTHTHRESHOLD`,
+`ARCRESOLUTION`, `OBEYPOLYGONCUTOUT`, `SHELVED`.
+
+A solid pour is stored as Regions6/ShapeBasedRegions6 pairs with the polygon
+index at @5, no net of their own, and props `KIND=0`, `SUBPOLYINDEX=0`
+(free regions carry -1). Each piece is one region with holes; Altium's rings
+may touch themselves, which shapely calls invalid. Thermal reliefs are part
+of the region outline. Regions with `KIND=1` are polygon cutouts; on the
+Keep-Out or Multi layer they apply to every copper layer.
+
+Measured on the fixture pours (pour.py): the gap to other objects is exactly
+the clearance rule's value for a poured region (Poly class) except on one
+board, which keeps ~0.008 mm more; relief air gaps around rectangular pads,
+and clearance gaps around rectangular pads, have square corners; a relief
+spoke exists when pour copper covers its continuation for half a conductor
+width past the air gap; neck removal acts like a morphological opening with
+half the neck width.
+
 ## Preserved without being understood
 
 Kept byte for byte; listed with what could go stale after an edit:

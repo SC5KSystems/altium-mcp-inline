@@ -74,11 +74,15 @@ class RuleSet:
         self.unevaluated = [{"rule": c.name, "kind": c.kind, "error": c.error}
                             for c in self.compiled if c.error and c.rule.enabled]
         self._cache = {}
+        self._kinds = {}
 
     def of_kind(self, kind):
-        return sorted((c for c in self.compiled
-                       if c.kind == kind and c.rule.enabled and c.error is None),
-                      key=lambda c: c.rule.priority)
+        got = self._kinds.get(kind)
+        if got is None:
+            got = self._kinds[kind] = sorted(
+                (c for c in self.compiled if c.kind == kind and c.rule.enabled and c.error is None),
+                key=lambda c: c.rule.priority)
+        return got
 
     def has_unevaluated(self, kind):
         return [u for u in self.unevaluated if u["kind"] == kind]
@@ -104,12 +108,16 @@ class RuleSet:
         return None
 
     # ------------------------------------------------------------ values
-    def clearance(self, a, b, kind="Clearance"):
-        """(gap mm, rule) for two objects, or (None, None) if no rule applies."""
+    def clearance(self, a, b, kind="Clearance", classes=None):
+        """(gap mm, rule) for two objects, or (None, None) if no rule applies.
+
+        classes overrides the (a, b) object classes used for the rule's
+        per-object matrix, e.g. ("Poly", "Hole") for a drill hole.
+        """
         c = self.best(kind, a, b)
         if c is None:
             return None, None
-        pair = (clearance_class(a), clearance_class(b))
+        pair = tuple(classes) if classes else (clearance_class(a), clearance_class(b))
         if pair in c.matrix:
             return c.matrix[pair], c
         return c.length("GAP", c.length("GENERICCLEARANCE")), c
@@ -171,15 +179,28 @@ class RuleSet:
         return c.length("EXPANSION") if c else 0.1016
 
     def polygon_connect(self, a, b):
+        """How pad or via `a` joins polygon copper `b`: style (relief, direct
+        or noconnect), spoke conductor_width, entries, air_gap and angle.
+
+        Newer rules keep separate settings per object (THPAD., SMDPAD.,
+        VIA. keys); older ones one set for all.
+        """
         c = self.best("PolygonConnect", a, b)
         if c is None:
             return None
         p = c.rule.props
-        return {"style": (p.get("CONNECTSTYLE") or "Relief").lower(),
-                "conductor_width": c.length("RELIEFCONDUCTORWIDTH", 0.254),
-                "entries": int(parse_float(p.get("RELIEFENTRIES", "4"))),
-                "air_gap": c.length("AIRGAPWIDTH", 0.254),
-                "angle": 45 if "45" in (p.get("POLYGONRELIEFANGLE") or "") else 90,
+        k = getattr(a, "KIND", "")
+        prefix = "VIA." if k == "via" else "SMDPAD." if k == "pad" and a.is_smd else "THPAD."
+
+        def get(key, default=None):
+            v = p.get(prefix + key)
+            return v if v is not None else p.get(key, default)
+
+        return {"style": (get("CONNECTSTYLE") or "Relief").lower(),
+                "conductor_width": parse_length(get("RELIEFCONDUCTORWIDTH"), 0.254),
+                "entries": int(parse_float(get("RELIEFENTRIES", "4"))),
+                "air_gap": parse_length(get("AIRGAPWIDTH"), 0.254),
+                "angle": 45 if "45" in (get("POLYGONRELIEFANGLE") or "") else 90,
                 "rule": c.name}
 
     def via_style(self, obj):
