@@ -37,7 +37,10 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 - Preflight a body by hand: `python server/script_preflight.py body.pas [--sandbox dev/sandbox/Sandbox.pas] [--allow-unknown]`
 - Recover a wedged executor: `python dev/unwedge.py [--project dev]`; state only: `python dev/unwedge.py --status`
 - Fetch fixtures: `python dev/fetch_fixtures.py [--list]`
-- WP1 tests: `python -m unittest discover -s server/tests -p "test_script_preflight.py"` and `-p "test_altium_guard.py"`
+- All offline tests: `python -m unittest discover -s server/tests -p "test_[!a]*.py"`.
+  The pattern leaves out `test_altium_script.py`, the pre-existing live
+  integration test, which errors at setUpClass on any machine without
+  `C:/AltiumMCP` and a running Altium (it did before this session too).
 
 ## WP1 notes
 

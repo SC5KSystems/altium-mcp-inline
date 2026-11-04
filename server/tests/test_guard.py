@@ -1,6 +1,6 @@
 """Offline tests for server/altium_guard.py, with every OS call faked.
 
-    python -m unittest discover -s server/tests -p "test_altium_guard.py"
+    python -m unittest discover -s server/tests -p "test_guard.py"
 
 What the real Windows calls do on a live Altium is UNVERIFIED here; see
 dev/CLOUD_HANDOFF.md for the local check.
