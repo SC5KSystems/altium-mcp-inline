@@ -1,0 +1,191 @@
+"""Design rules from Rules6, resolved per object the way Altium does.
+
+For a rule kind, the enabled rule with the lowest PRIORITY number whose
+scope(s) match wins. Binary rules (clearance and friends) match when scope 1
+takes one object and scope 2 the other, in either order. A rule whose scope
+uses a function scope.py cannot evaluate is listed in `unevaluated` and never
+applied, so a check that depends on it says so instead of guessing.
+"""
+
+from .pcbdoc import parse_bool, parse_float, parse_length
+from .scope import ScopeError, compile_scope
+
+BINARY_KINDS = {"Clearance", "ComponentClearance", "HoleToHoleClearance",
+                "SilkToSolderMaskClearance", "SilkToSilkClearance", "ShortCircuit",
+                "BoardOutlineClearance", "SilkToBoardRegionClearance", "DiffPairsRouting"}
+
+# OBJECTCLEARANCES names -> object classifier used below
+CLEARANCE_OBJECT = {"track": "Track", "arc": "Arc", "via": "Via", "fill": "Fill",
+                    "text": "Text", "plane": "Poly"}
+
+
+def clearance_class(obj):
+    k = getattr(obj, "KIND", "")
+    if k == "pad":
+        return "THPad" if obj.hole > 0 else "SMDPad"
+    if k == "region":
+        return "Poly" if obj.polygon is not None else "Region"
+    if k in ("track", "arc") and getattr(obj, "polygon", None) is not None:
+        return "Poly"
+    return CLEARANCE_OBJECT.get(k, "Region")
+
+
+class CompiledRule:
+    def __init__(self, rule):
+        self.rule = rule
+        self.error = None
+        try:
+            self.s1 = compile_scope(rule.scope1)
+            self.s2 = compile_scope(rule.scope2)
+        except ScopeError as e:
+            self.error = str(e)
+            self.s1 = self.s2 = None
+        self.matrix = {}
+        oc = rule.props.get("OBJECTCLEARANCES") or ""
+        for part in oc.split(";"):
+            if ":" not in part:
+                continue
+            pair, v = part.rsplit(":", 1)
+            a, _, b = pair.partition("-")
+            try:
+                val = float(v) * 2.54e-6
+            except ValueError:
+                continue
+            if val > 0:  # rules in Simple mode carry all-zero cells: use the generic gap
+                a, b = a.replace("ClearanceObj_", ""), b.replace("ClearanceObj_", "")
+                self.matrix[(a, b)] = self.matrix[(b, a)] = val
+
+    @property
+    def kind(self):
+        return self.rule.kind
+
+    @property
+    def name(self):
+        return self.rule.name
+
+    def length(self, key, default=0.0):
+        return parse_length(self.rule.props.get(key), default)
+
+
+class RuleSet:
+    def __init__(self, doc):
+        self.doc = doc
+        self.compiled = [CompiledRule(r) for r in doc.rules]
+        self.unevaluated = [{"rule": c.name, "kind": c.kind, "error": c.error}
+                            for c in self.compiled if c.error and c.rule.enabled]
+        self._cache = {}
+
+    def of_kind(self, kind):
+        return sorted((c for c in self.compiled
+                       if c.kind == kind and c.rule.enabled and c.error is None),
+                      key=lambda c: c.rule.priority)
+
+    def has_unevaluated(self, kind):
+        return [u for u in self.unevaluated if u["kind"] == kind]
+
+    def _match(self, c, which, obj):
+        key = (c.rule.index, which, getattr(obj, "storage", type(obj).__name__),
+               getattr(obj, "index", id(obj)))
+        v = self._cache.get(key)
+        if v is None:
+            scope = c.s1 if which == 1 else c.s2
+            v = scope.is_all or scope.match(self.doc, obj)
+            self._cache[key] = v
+        return v
+
+    def best(self, kind, a, b=None):
+        for c in self.of_kind(kind):
+            if b is None:
+                if self._match(c, 1, a):
+                    return c
+            elif (self._match(c, 1, a) and self._match(c, 2, b)) or \
+                    (self._match(c, 1, b) and self._match(c, 2, a)):
+                return c
+        return None
+
+    # ------------------------------------------------------------ values
+    def clearance(self, a, b, kind="Clearance"):
+        """(gap mm, rule) for two objects, or (None, None) if no rule applies."""
+        c = self.best(kind, a, b)
+        if c is None:
+            return None, None
+        pair = (clearance_class(a), clearance_class(b))
+        if pair in c.matrix:
+            return c.matrix[pair], c
+        return c.length("GAP", c.length("GENERICCLEARANCE")), c
+
+    def max_clearance(self, kind="Clearance"):
+        vals = []
+        for c in self.of_kind(kind):
+            vals.append(c.length("GAP", c.length("GENERICCLEARANCE")))
+            vals.extend(c.matrix.values())
+        return max(vals) if vals else 0.0
+
+    def width(self, obj):
+        c = self.best("Width", obj)
+        if c is None:
+            return None
+        return {"min": c.length("MINLIMIT"), "preferred": c.length("PREFEREDWIDTH"),
+                "max": c.length("MAXLIMIT"), "rule": c.name}
+
+    def hole_size(self, obj):
+        c = self.best("HoleSize", obj)
+        if c is None:
+            return None
+        if not parse_bool(c.rule.props.get("ABSOLUTEVALUES"), True):
+            return {"rule": c.name, "relative": True}
+        return {"min": c.length("MINLIMIT"), "max": c.length("MAXLIMIT"), "rule": c.name}
+
+    def annular_ring(self, obj):
+        c = self.best("MinimumAnnularRing", obj)
+        return (c.length("MINIMUMRING"), c) if c else (None, None)
+
+    def hole_to_hole(self, a, b):
+        c = self.best("HoleToHoleClearance", a, b)
+        return (c.length("GAP"), c) if c else (None, None)
+
+    def board_outline(self, obj):
+        c = self.best("BoardOutlineClearance", obj, obj)
+        if c is None:
+            return None, None
+        cls = clearance_class(obj)
+        for (x, _y), v in c.matrix.items():
+            if x == cls:
+                return v, c
+        return c.length("GAP", c.length("GENERICCLEARANCE")), c
+
+    def component_clearance(self, a, b):
+        c = self.best("ComponentClearance", a, b)
+        return (c.length("GAP"), c) if c else (None, None)
+
+    def short_allowed(self, a, b):
+        c = self.best("ShortCircuit", a, b)
+        return bool(c and parse_bool(c.rule.props.get("ALLOWED"))), c
+
+    def silk_to_mask(self, a, b):
+        c = self.best("SilkToSolderMaskClearance", a, b)
+        return (c.length("MINSILKSCREENTOMASKGAP"), c) if c else (None, None)
+
+    def solder_mask_expansion(self, obj):
+        c = self.best("SolderMaskExpansion", obj)
+        return c.length("EXPANSION") if c else 0.1016
+
+    def polygon_connect(self, a, b):
+        c = self.best("PolygonConnect", a, b)
+        if c is None:
+            return None
+        p = c.rule.props
+        return {"style": (p.get("CONNECTSTYLE") or "Relief").lower(),
+                "conductor_width": c.length("RELIEFCONDUCTORWIDTH", 0.254),
+                "entries": int(parse_float(p.get("RELIEFENTRIES", "4"))),
+                "air_gap": c.length("AIRGAPWIDTH", 0.254),
+                "angle": 45 if "45" in (p.get("POLYGONRELIEFANGLE") or "") else 90,
+                "rule": c.name}
+
+    def via_style(self, obj):
+        c = self.best("RoutingVias", obj)
+        if c is None:
+            return None
+        return {"min_diameter": c.length("MINWIDTH"), "max_diameter": c.length("MAXWIDTH"),
+                "min_hole": c.length("MINHOLEWIDTH"), "max_hole": c.length("MAXHOLEWIDTH"),
+                "diameter": c.length("WIDTH"), "hole": c.length("HOLEWIDTH"), "rule": c.name}

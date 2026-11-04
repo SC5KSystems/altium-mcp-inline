@@ -1,0 +1,8 @@
+# Offline PCB tools. The reader and writer need only the standard library;
+# numpy is the one core dependency beyond it. The rest are guarded imports that
+# fail with a message naming this file.
+numpy>=1.24
+shapely>=2.0      # geometry: connectivity, pours, DRC, rendering
+scipy>=1.10       # sparse solves in pdn.py (a slower numpy solver is the fallback)
+pillow>=10.0      # PNG output (already an MCP server dependency)
+olefile>=0.46     # tests only: an independent compound-file reader to check the writer

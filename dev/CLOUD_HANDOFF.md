@@ -30,7 +30,8 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 
 | Package | State | Commit |
 |---|---|---|
-| WP1 script preflight + unwedge | done (offline tests); live UNVERIFIED | see git log |
+| WP1 script preflight + unwedge | done (offline tests); live UNVERIFIED | `bf2d5e8` |
+| Reader foundation (rebuilt: phase-6 missing) | done | see git log |
 
 ## How to run
 
@@ -41,6 +42,29 @@ Branch: `claude/gracious-rubin-f1hbv2`.
   The pattern leaves out `test_altium_script.py`, the pre-existing live
   integration test, which errors at setUpClass on any machine without
   `C:/AltiumMCP` and a running Altium (it did before this session too).
+
+## Reader foundation
+
+Rebuilt from scratch under `server/offline/` (see `server/offline/README.md`).
+Measured on the KiCad fixtures:
+
+- The compound-file reader matches olefile stream for stream on all 15 files.
+  The writer round-trips all 14 compound files (PcbDoc, PcbLib, SchDoc) with
+  identical streams and entry metadata, checked by both readers.
+- Every parsed storage of all 7 PcbDocs re-encodes to its original bytes; a
+  no-op `pcbwrite.save` gives byte-identical stream contents.
+- Connectivity on the 5 routed boards: islands equal nets, 0 unrouted, 0
+  shorts, 0 dead copper. That only holds once vias, planes and pours are all
+  decoded right, so it is the main evidence the geometry is correct.
+- All 218 fixture rules compile in the scope evaluator.
+- PDN: a 28 mm x 1 mm x 35 um track gives 137.93 mV at 10 A (0.05 mm grid)
+  against 137.6 mV from rho*L/(w*t), and converges to it as the grid refines.
+- Speed: parse 0.01-0.11 s; connectivity 0.1-0.7 s; a whole-board plane PDN
+  solve 3.8 s at 0.1 mm.
+
+Bugs of the earlier reader that the brief lists, handled here: free fills are
+copper; poured regions take their polygon's net; each shape is rasterized on
+its own (even-odd over its own rings), so holes never blank other copper.
 
 ## WP1 notes
 
