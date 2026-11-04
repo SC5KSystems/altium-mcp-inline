@@ -26,21 +26,39 @@ hostile to automation:
 
 ## Recovering a wedged executor
 
-- `python dev/unwedge.py` dispatches Altium's own Stop Debugging process into
-  the running instance:
-
-      X2.EXE -REditScript:Stop
-
-  Same channel the runner uses to launch scripts, so it needs no window focus
-  and no synthetic keystrokes. It then **verifies** recovery by running a probe
-  script and waiting for output - a wedge is defined by scripts silently doing
-  nothing, so anything less is a guess. Ctrl+F3 remains only as a fallback; it
-  reaches the debugger solely when the script editor is the active document,
-  which is why it used to fail silently while reporting success.
-- The runner calls this automatically on every wedge and says whether the
-  executor actually came back.
+- `python dev/unwedge.py` (and the MCP tool `recover_altium_script_engine`,
+  which runs the same code in `server/altium_guard.py`) recovers a wedge:
+  1. checks X2.EXE first: a dead Altium is reported, never started; a hung
+     one (not pumping messages) is reported and left alone;
+  2. dispatches Altium's own Stop Debugging process into the running
+     instance (`X2.EXE -REditScript:Stop`), no focus or keystrokes needed;
+  3. **verifies** by running a probe in the project that wedged:
+     `server/SandboxScript` by default (what `run_altium_script` runs),
+     `--project dev` for `dev/sandbox` (what the runner here uses);
+  4. only if that fails, opens that project's `Sandbox.pas` in Altium,
+     checks the foreground frame's title names it, and only then sends
+     Ctrl+F3 (sent to a PCB or schematic it would mean something else).
+- A run that ends without its result writes
+  `C:\Users\Public\altium_mcp\executor_wedged.json`. While it exists,
+  `run_altium_script`, every bridge tool and the runner here refuse to send
+  anything, returning at once instead of queueing behind the paused script.
+  Recovery clears it; so does an Altium restart (the marker names the X2.EXE
+  PIDs it was written against). `python dev/unwedge.py --status` shows both.
 - `--auto-restart` force-restarts Altium as a last resort (~60-90s, kills
   X2.EXE, unsaved Altium work is lost).
+
+## Preflight
+
+`server/script_preflight.py` checks a sandbox body before anything reaches
+Altium: every bare name must be declared by the target sandbox, be a
+built-in, or be an API name this repo's `.pas` files use without declaring
+(or one proven live); every name after a dot must appear after a dot in the
+repo's `.pas` files or the proven list. Errors carry the nearest known name.
+`Result :=`, `Log(...)`, `GetCurrentPCBBoard`, a local from a production
+unit, and a list used before `TStringList.Create` are all caught. The
+runner's `--allow-unknown` (the tool's `allow_unknown=true`) downgrades
+unknown names to warnings. `python server/script_preflight.py body.pas
+[--sandbox dev/sandbox/Sandbox.pas]` checks a file by hand.
 
 ## Screenshots are a standing TOP priority
 

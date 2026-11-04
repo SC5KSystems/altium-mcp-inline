@@ -1,0 +1,23 @@
+// Create a track and a via, then register them with the board.
+Obj1 := PCBServer.GetPCBBoardByPath('C:\scratch\scratch.PcbDoc');
+PCBServer.PreProcess;
+Obj2 := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
+Obj2.x1 := MMsToCoord(10);
+Obj2.y1 := MMsToCoord(10);
+Obj2.x2 := MMsToCoord(20);
+Obj2.y2 := MMsToCoord(10);
+Obj2.Width := MMsToCoord(0.5);
+Obj2.Layer := eTopLayer;
+Obj1.AddPCBObject(Obj2);
+PCBServer.SendMessageToRobots(Obj1.I_ObjectAddress, c_Broadcast, PCBM_BoardRegisteration, Obj2.I_ObjectAddress);
+Obj3 := PCBServer.PCBObjectFactory(eViaObject, eNoDimension, eCreate_Default);
+Obj3.x := MMsToCoord(20);
+Obj3.y := MMsToCoord(10);
+Obj3.Size := MMsToCoord(0.8);
+Obj3.HoleSize := MMsToCoord(0.4);
+Obj3.LowLayer := eTopLayer;
+Obj3.HighLayer := eBottomLayer;
+Obj1.AddPCBObject(Obj3);
+PCBServer.SendMessageToRobots(Obj1.I_ObjectAddress, c_Broadcast, PCBM_BoardRegisteration, Obj3.I_ObjectAddress);
+PCBServer.PostProcess;
+ResultText := '{"created": 2}';

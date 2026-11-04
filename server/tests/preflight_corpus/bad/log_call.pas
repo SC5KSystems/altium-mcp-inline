@@ -1,0 +1,2 @@
+// expect: SandboxLog
+Log('x');

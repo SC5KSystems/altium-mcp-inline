@@ -78,18 +78,8 @@ begin
 
     try
         // === BEGIN EXPERIMENT (rewritten by dev/sandbox_runner.py) ===
-        Obj3 := Client.GetDocumentByPath('Sheet14.SchDoc');
-        if (Obj3 <> nil) then
-        begin
-            if (Pos('Cerillo', Obj3.FileName) > 0) then
-                SandboxLog('ABORT: project sheet matched')
-            else
-            begin
-                Obj3.DoSafeChangeFileNameAndSave('C:\Users\Public\altium_mcp\rebuilt\Sheet7_rebuilt.SchDoc', 'SCH');
-                SandboxLog('saved');
-            end;
-        end;
-        ResultText := '{"ok": true}';
+        SandboxLog('placeholder: the runner replaces this body on every run');
+        ResultText := '{"sandbox": "placeholder"}';
         // === END EXPERIMENT ===
     except
         SandboxLog('EXCEPTION escaped the experiment body');

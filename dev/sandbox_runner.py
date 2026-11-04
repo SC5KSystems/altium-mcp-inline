@@ -3,6 +3,8 @@
 Usage:
     python dev/sandbox_runner.py <experiment.pas> [timeout_seconds]
     python dev/sandbox_runner.py -                 (body from stdin)
+    flags: --allow-unknown (preflight warns instead of refusing)
+           --auto-restart  (kill and restart a wedged Altium; unsaved work is lost)
 
 Why this exists: Altium has no headless test mode for DelphiScript. Its
 failure modes are hostile to automation - a runtime error leaves the script
@@ -10,6 +12,10 @@ PAUSED IN THE DEBUGGER with no dialog, and every later RunScript silently
 does nothing ("wedged executor"); compile errors show only a modal dialog.
 
 How it works:
+- server/script_preflight.py checks every identifier first (same check as
+  run_altium_script, against this sandbox's declarations) and refuses a body
+  that would compile and then wedge; server/altium_guard.py refuses to launch
+  into an Altium that is not running, hung, or already wedged.
 - The experiment body is injected between the BEGIN/END EXPERIMENT markers of
   dev/sandbox/Sandbox.pas, a STANDALONE script project. A broken experiment
   can never break the production Altium_API tooling.
@@ -43,10 +49,11 @@ SANDBOX_RESULT = EXCHANGE / "sandbox_result.json"
 BEGIN = "// === BEGIN EXPERIMENT"
 END = "// === END EXPERIMENT"
 
-config = json.load(open(REPO / "server" / "config.json"))
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from unwedge import unwedge  # noqa: E402
+sys.path.insert(0, str(REPO / "server"))
+from unwedge import unwedge, altium_exe  # noqa: E402
+import altium_guard  # noqa: E402
+import script_preflight  # noqa: E402
 
 
 def _title(hwnd):
@@ -177,7 +184,7 @@ def run(timeout=120, quiet=False):
         if f.exists():
             f.unlink()
 
-    cmd = (f'"{config["altium_exe_path"]}" -RScriptingSystem:RunScript('
+    cmd = (f'"{altium_exe()}" -RScriptingSystem:RunScript('
            f'ProjectName="{SANDBOX_PRJ}"^|ProcName="Sandbox>Run")')
     subprocess.Popen(cmd, shell=True)
 
@@ -211,6 +218,8 @@ def run(timeout=120, quiet=False):
         print("-" * 62)
         print(f">> Script STOPPED after: {lines[-1] if lines else '(nothing)'}")
         print(">> The statement AFTER that step is what crashed or paused.")
+        altium_guard.mark_wedged("dev sandbox script started but did not finish",
+                                 "sandbox_runner", last_step=lines[-1] if lines else None)
         # Recover automatically and PROVE it worked, so the next experiment is
         # not a false negative. unwedge() dispatches EditScript:Stop into the
         # running instance (no window focus needed) and verifies by running a
@@ -218,7 +227,7 @@ def run(timeout=120, quiet=False):
         for shot in capture_script_editor():
             print(f">> Altium window captured (look for the paused line): {shot}")
         print(">> Clearing the paused debugger...")
-        if unwedge(verbose=False):
+        if unwedge(verbose=False, project="dev"):
             print(">> Executor recovered and VERIFIED alive - re-run the experiment.")
         else:
             print(">> Could not clear the debugger; re-run with --auto-restart.")
@@ -249,7 +258,8 @@ def restart_altium(wait=180):
     print("  >> restarting Altium to clear the wedged executor...")
     subprocess.run(["taskkill", "/F", "/IM", "X2.EXE"], capture_output=True)
     time.sleep(5)
-    subprocess.Popen(f'"{config["altium_exe_path"]}"', shell=True)
+    altium_guard.clear_wedge()
+    subprocess.Popen(f'"{altium_exe()}"', shell=True)
     # Altium is ready when a sandbox ping actually executes
     saved = SANDBOX_PAS.read_text(encoding="utf-8")
     inject(PING_BODY)
@@ -275,6 +285,24 @@ if __name__ == "__main__":
         sys.exit(1)
     body = sys.stdin.read() if args[0] == "-" else Path(args[0]).read_text(encoding="utf-8")
     timeout = int(args[1]) if len(args) > 1 else 120
+
+    report = script_preflight.check(body, SANDBOX_PAS, allow_unknown="--allow-unknown" in flags)
+    if report["errors"] or report["warnings"]:
+        print(script_preflight.format_report(report))
+    if not report["ok"]:
+        print(">> preflight refused the experiment; nothing was sent to Altium")
+        sys.exit(2)
+
+    blocker = altium_guard.launch_blocker()
+    if blocker:
+        print(f">> {blocker['error']}")
+        if blocker["blocked"] == "wedged" and "--auto-restart" in flags:
+            if not restart_altium():
+                sys.exit(3)
+        else:
+            if blocker.get("recovery"):
+                print(f">> {blocker['recovery']} (here: python dev/unwedge.py --project dev)")
+            sys.exit(3)
 
     inject(body)
     print(f"injected {len(body.strip().splitlines())} lines -> running sandbox...")
