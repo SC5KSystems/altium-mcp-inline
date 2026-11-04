@@ -115,8 +115,11 @@ def pad(doc, name, x, y, size_x, size_y, layer=L.TOP, shape="rect", hole=0.0, ro
     layer = L.parse(layer)
     if hole > 0:
         layer = L.MULTI
-        if hole >= min(size_x, size_y):
-            raise FormatError("pad hole must be smaller than the pad")
+        # a plated hole needs a ring; an unplated one may be the pad's size
+        # (Altium's usual non-plated mounting hole)
+        if hole > min(size_x, size_y) or (plated and hole >= min(size_x, size_y)):
+            raise FormatError("pad hole must be smaller than the pad"
+                              + ("" if plated else " (or equal, when unplated)"))
     p = _new(doc, "pad")
     p.set_name(str(name))
     s = p.subs[4]

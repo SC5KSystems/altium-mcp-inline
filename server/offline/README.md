@@ -18,6 +18,14 @@ Read, check, edit and write Altium `.PcbDoc` files without Altium. Run from the
     python -m offline fuse board.PcbDoc F1.2 --rating 10 --i2t 500
     python -m offline fets board.PcbDoc --current VBAT=30     # FET pad entry density
     python -m offline autoroute board.PcbDoc --nets 'SIG*' -o plan.json --check  # Freerouting
+    python -m offline review-power board.PcbDoc --current VBAT=30   # joins, vias, necks, edge
+    python -m offline notches board.PcbDoc -o merge.json      # same-net pours that nearly meet
+    python -m offline stack base.PcbDoc top.PcbDoc --map J7:J1 # boards joined by headers
+    python -m offline blank template.PcbDoc -o new.PcbDoc --rect 100 80 --hole 4 4 3.2
+    python -m offline assembly board.PcbDoc -o assembly.html --bom bom.csv
+    python -m offline fab-check board.PcbDoc gerbers/         # Gerber/drill read-back
+    python -m offline models3d board.PcbDoc                   # embedded STEP sanity
+    python -m offline membership-audit --board-path "C:\b\x.PcbDoc" -o audit.pas  # live script
 
 All lengths are millimetres. Coordinates are absolute (database) coordinates,
 Y up, as the file stores them; `PcbDoc.origin` gives the user origin.
@@ -51,6 +59,14 @@ scipy, Pillow; olefile for tests).
 | `power.py` | IPC-2221 and Onderdonk formulas, via arrays, fuse vs copper, FET pad screen |
 | `specctra.py` | Specctra DSN export and SES import (`dsn`, `ses` commands) |
 | `autoroute.py` | route signal nets with Freerouting, back as an EditPlan |
+| `review.py` | power layout review: relief joins, vias per amp, necks, edge, test points, polarity |
+| `notch.py` | same-net pours that nearly meet: seam, notches, merge plan |
+| `stack.py` | two boards joined by mating headers: fit, pin 1, mirroring, holes, nets, heights |
+| `blank.py` | a new empty board from a template (outline, mounting holes) |
+| `assembly.py` | one-file interactive hand-assembly page from the board and a BOM |
+| `gerber.py` | Gerber/Excellon read-back against the board, fab readiness |
+| `models3d.py` | embedded STEP models against their footprints |
+| `audit.py` | live script: primitives whose Net disagrees with their net's member group |
 | `synth.py` | small synthetic boards for tests |
 | `fixtures.py` | where tests find real boards |
 
@@ -162,3 +178,44 @@ seen in its log is a version check). `--allow-network` lifts the block. Its auto
 0.75x and 0.6x of the class width at pins whatever the Width rule says;
 `--neckdown` allows it and the DRC then shows where the rule breaks.
 `--ses` imports a session routed elsewhere (e.g. in Freerouting's GUI).
+
+## Small tools
+
+- `review-power` lists what a reviewer of a high-current board checks by
+  eye: power pads joined to their pour by thermal reliefs (with the current
+  density in the spokes), vias per amp against IPC-2221, the narrowest
+  track per power net, parts closer than `--edge` to the outline, power
+  nets with no test point, and polarized parts whose silkscreen is the same
+  at both pins. Heuristics; each finding says what it measured.
+- `notches` finds same-net pours on one layer within `--gap` of each other
+  (what removing a part between them leaves), reports the seam and the
+  notch tips, and with `-o` writes a plan that closes the seam and merges
+  the pair (repour afterwards).
+- `stack A B --map J7:J1` fits B's mating pins onto A's (rotation and
+  shift), says when only a mirrored fit or a turned connector lines up,
+  checks mounting holes after the fit, maps pin-to-pin nets (ground or power
+  against something else is a problem) and compares the connectors' body
+  heights with the tallest parts between the boards. `--facing` when B is
+  upside down.
+- `blank` keeps a template's stack, rules, classes (emptied) and settings,
+  removes every component, net, polygon and primitive, sets the outline in
+  both places Altium keeps it (Board6 vertices and the board region) and
+  adds mounting holes. Embedded fonts and models stay.
+- `assembly` writes one HTML file with nothing fetched at run time: both
+  sides of the board (the bottom mirrored as held), the BOM grouped by value
+  and footprint, click to light a line's parts, ticks kept in the browser.
+- `fab-check` reads a Gerber/drill folder (X2 file functions, else Altium's
+  extensions), lists layers the board needs but the set lacks, compares hole
+  sizes and counts, finds the files' origin and orientation from the holes
+  and checks every hit lands on a board hole.
+- `models3d` reads each embedded STEP (zlib in `Models/N`, or
+  `Library/Models/N` in a PcbLib), resolves its length unit, and checks the
+  placed model against its pads: standing on end (with the quarter turn and
+  lift that lay it flat), pads it does not cover (from the body's own
+  projected outline; a STEP assembly's raw points are in its parts' frames),
+  and heights against the footprint's package class and the declared height.
+- `membership-audit` writes a live script (it cannot be seen offline): every
+  primitive in a net's member group whose Net is another, and every
+  primitive whose Net is set but which is not in that group; `--fix`
+  repairs the groups. `dev/probe_processes.py` tries candidate processes for
+  a dialog-free DRC or Update PCB, one per run.

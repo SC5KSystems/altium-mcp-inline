@@ -38,7 +38,8 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 | WP5 offline DRC | done offline; agreement with Altium's DRC UNVERIFIED | `f0b9814` |
 | WP6 offline ECO | done offline; Altium's view of ECO'd boards UNVERIFIED | `cd73856` |
 | WP7 power copper: planner, thermal, vias, fuse, FETs | done offline; Altium's view of planned copper UNVERIFIED; thermal accuracy is a screen | `111dd83` |
-| WP8 autorouter bridge: DSN export, Freerouting, SES import | done; routed here with Freerouting 2.5.0 on Java 25; Altium's view of routed boards and a Windows run UNVERIFIED | see git log ("autorouter") |
+| WP8 autorouter bridge: DSN export, Freerouting, SES import | done; routed here with Freerouting 2.5.0 on Java 25; Altium's view of routed boards and a Windows run UNVERIFIED | `bd242ab` |
+| WP9 small tools: review-power, notches, stack, blank, assembly, fab-check, models3d, membership-audit, probe_processes | done offline; the live script, the probe and Altium opening a blank board UNVERIFIED | see git log ("small tools") |
 
 ## How to run
 
@@ -63,6 +64,15 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 - FET pads: `python -m offline fets board.PcbDoc --current VBAT=30 [--flow "VBAT:30:J1.1>Q1.D"]`
 - Autoroute: `python -m offline autoroute board.PcbDoc [--nets S1 'SIG*'] [--keep-fixed none] -o plan.json [--check] [--json] [--neckdown] [--passes 20] [--timeout 900] [--java java25] [--freerouting jar] [--workdir dir] [--ses routed.ses]`; get Freerouting: `python -m offline autoroute --fetch`
 - DSN / SES alone: `python -m offline dsn board.PcbDoc -o board.dsn [--nets ...]`; `python -m offline ses routed.ses board.PcbDoc -o plan.json [--nets ...]`
+- Power review: `python -m offline review-power board.PcbDoc [--current VBAT=30 GND=30] [--edge 1.0] [--rise 10] [--json]`
+- Notches: `python -m offline notches board.PcbDoc [--gap 0.5] [--net GND] [-o merge.json] [--png n.png] [--json]`
+- Stack: `python -m offline stack base.PcbDoc top.PcbDoc --map J7:J1 [--map J8:J2] [--facing] [--tol 0.1] [--json]`
+- Blank board: `python -m offline blank template.PcbDoc -o new.PcbDoc (--rect W H [--at X Y] [--corner R] | --outline "x,y x,y ...") [--hole X Y D] [--plated-hole X Y D PAD]`
+- Assembly page: `python -m offline assembly board.PcbDoc -o assembly.html [--bom bom.csv] [--title NAME]`
+- Fab check: `python -m offline fab-check board.PcbDoc gerber_folder [--tol 0.02] [--json]`
+- 3D models: `python -m offline models3d board.PcbDoc|lib.PcbLib [--all] [--json]`
+- Membership audit (live): `python -m offline membership-audit --board-path "C:\...\x.PcbDoc" [--fix] -o audit.pas`, then run the body with `run_altium_script`
+- Process probe (live): `python dev/probe_processes.py --list`; `--board C:\scratch\copy.PcbDoc --next`
 - Second reader (Linux, KiCad installed): `python3.12 dev/kicad_read.py a.PcbDoc b.PcbDoc`
 - All offline tests: `python -m unittest discover -s server/tests -p "test_[!a]*.py"`.
   The pattern leaves out `test_altium_script.py`, the pre-existing live
@@ -444,6 +454,36 @@ builder), `autoroute.py` (net selection, Freerouting runner, report).
   routed class gets its worst case), text on copper as an obstacle, plane
   layers (routing is on signal layers only).
 
+## WP9 notes (small tools)
+
+- **review-power** on HiFive with made-up currents finds the power nets'
+  narrowest tracks, six parts within 1 mm of the edge and two power nets
+  with no test point; the synthetic test covers a 4-spoke relief join
+  (density in the spokes), a single via for 20 A, and a symmetric diode
+  silkscreen flagged while one with a cathode bar is not.
+- **fab-check**, checked against KiCad's own Gerber X2 and Excellon output
+  of the HiFive fixture (KiCad 7, plotted here): all 293 drill hits land on
+  board holes once the tool finds the files' origin (the board origin,
+  25.4 mm, 25.4 mm), every hole size and count agrees, and the missing bottom
+  silkscreen is reported. Routed slots (G00/M15/G01/M16) count as one hole
+  at their middle, G85 slots likewise. Altium's own output (implied-decimal
+  Excellon with `;FILE_FORMAT=`, extension-named Gerbers) is parsed by the
+  same code but no Altium output was available here.
+- **models3d** reads all 38 embedded STEP models of the Fastino fixture with
+  no finding; heights match the IPC names (0805 at 1.45 mm, 0603 at 0.45 mm)
+  and a STEP written in inches (0.0254 m per unit) resolves to the declared
+  2.01 mm. A STEP assembly places its parts by transforms, so its raw points
+  are not used for pad coverage (the body's projected outline is).
+- **blank** from HiFive: 112 parts, 78 nets and 3,694 primitives removed, 41
+  rules and 20 (emptied) classes kept, outline set in Board6 and the board
+  region; KiCad's importer reads it (3 pads, no nets). Unparsed storages
+  (embedded fonts, models, unions) are kept as they are.
+- **stack**, **notches**, **assembly**: synthetic tests; the assembly page
+  was driven in Chromium (no console errors; click and tick work).
+- **membership-audit** and **probe_processes** only generate scripts here;
+  both pass preflight. The audit's fix loop is capped per net so a removal
+  that does not take cannot hang Altium.
+
 ## UNVERIFIED (needs Altium)
 
 Run these on the Altium PC, in order. Each says what passing looks like.
@@ -564,6 +604,30 @@ Run these on the Altium PC, in order. Each says what passing looks like.
     the work folder (it holds no board data beyond net names), and the DRC
     report.
 
+19. **Membership audit runs and finds nothing on a clean board.** Open a
+    scratch copy of a board in Altium, then
+    `python -m offline membership-audit --board-path "C:\scratch\b.PcbDoc" -o C:\scratch\audit.pas`
+    and run the body with `run_altium_script`. Pass: ResultText is JSON with
+    `checked` > 0 and `stale_members` = `unregistered` = 0 (or a list that
+    makes sense). Then break one on purpose (a live script that sets
+    `Obj.Net` without `AddPCBObject`), run again: it must list that
+    primitive; run with `--fix`, then again without: zero. If Altium wedges,
+    `python dev/unwedge.py` and send the sandbox log.
+20. **Blank board opens.** `python -m offline blank <a real board> -o C:\scratch\blank.PcbDoc --rect 100 80 --hole 4 4 3.2`,
+    open it in Altium. Pass: no dialog; the outline and holes are there;
+    Design > Rules shows the template's rules; Design > Classes are empty.
+21. **Process probe.** `python dev/probe_processes.py --list`, then on a
+    scratch copy of a board in a project, run `--next` once per session
+    until all are done (8 needs `--outjob` with an OutJob holding a Design
+    Rules Check report output and `--container`). Pass is not expected; the
+    log (`C:\Users\Public\altium_mcp\probe\probe_log.jsonl`) is the
+    result: send it. A candidate that returned with no dialog and changed
+    `violations_after` (or wrote a DRC report) is the find.
+22. **fab-check on Altium's own outputs.** Generate Gerbers and NC drill
+    from Altium for a board, then `python -m offline fab-check board.PcbDoc <output folder>`.
+    Pass: no missing layer that the set really has, drill sizes and counts
+    agree, every hit matched. Send the printed report if not.
+
 ## Decisions made without asking
 
 - Work from `origin/main` + eager-ptolemy because phase-6 is missing (as the
@@ -607,3 +671,8 @@ Run these on the Altium PC, in order. Each says what passing looks like.
   unless `--keep-fixed none`; other nets' pours are left out to be repoured;
   neck-down is off; Freerouting's network access is blocked by default;
   new vias come from the RoutingVias rule (else the board's commonest via).
+- Small tools: `review-power` uses `--current` nets as the power nets, else
+  the autorouter's power-net rule; `blank` keeps unparsed storages untouched
+  rather than rewrite structures it cannot test; `models3d` trusts the
+  body's projected outline over STEP points for coverage; the process probe
+  never saves and refuses N: paths.
