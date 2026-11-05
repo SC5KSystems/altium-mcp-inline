@@ -202,6 +202,8 @@ class DRC:
             what = f"Keep-out {d['kind']}"
         if d["kind"] == "hole":
             what = f"Hole of {d.get('pad') and 'pad ' + d['pad'] or 'via'}"
+        if d["kind"] == "text" and "text" in d:
+            what = f'Text "{d["text"][:24]}"' + (f" of {d['component']}" if d.get("component") else "")
         net = d.get("net")
         return f"{what} ({net})" if net else what
 

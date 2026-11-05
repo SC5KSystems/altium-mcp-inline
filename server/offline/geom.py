@@ -155,11 +155,15 @@ def region_shape(r, extra=0.0, arc_step_deg=5.0):
 
 
 def text_box(t):
-    """Rough footprint of a text string: its box, rotated (mm)."""
+    """Rough footprint of a text string: its box from the anchor, mirrored
+    text running the other way, turned by its rotation and grown by half the
+    stroke width (mm)."""
     sh = require()
     w = max(len(t.text), 1) * t.height * 0.8
-    g = sh.box(t.x, t.y, t.x + w, t.y + t.height)
-    return _rotate(g, t.rotation, t.x, t.y)
+    x0, x1 = (t.x - w, t.x) if t.mirrored else (t.x, t.x + w)
+    g = _rotate(sh.box(x0, t.y, x1, t.y + t.height), t.rotation, t.x, t.y)
+    half = max(getattr(t, "stroke_width", 0.0) or 0.0, 0.0) / 2
+    return g.buffer(half, join_style="mitre") if half > 0 else g
 
 
 def copper_shape(obj, layer, extra=0.0, fine=False):

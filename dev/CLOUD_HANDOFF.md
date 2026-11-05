@@ -730,6 +730,11 @@ Open:
     `compare_drc.py` now pairs violations by the objects Altium's message
     names (pad names, text string and position, track ends, either as
     stored or from the board origin) before falling back to markers.
+  Rerun: 6 matched (the outline tracks), 18 text and 4 ComponentClearance
+  offline only, Altium's 4 designator-on-pad texts not found. Since then
+  the text box runs leftward for mirrored text and is grown by half the
+  stroke width, messages name the text, and `dev/text_dump.py board X Y`
+  prints the reader's view of parts' texts (awaiting its output).
   Still approximate: text is checked as a box (0.8 x height per
   character), so text violations near the limit may differ; the 4
   ComponentClearance (3D body outlines) are not yet explained.
