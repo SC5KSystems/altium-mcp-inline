@@ -708,6 +708,32 @@ Open:
   The ECO now reads schematics with schnet (see WP6 notes); rerun needed.
 - fab-check: the outputs folder held no Gerber or drill files (2 other files).
 
+## Third acceptance run (2026-11-05, same board, `--only outputs drc-agree`)
+
+- ECO preview: only the 4 footprint changes Altium's Update PCB proposes
+  (schnet reader); the false split is gone.
+- fab-check failed on the slots: drill files list a slot under the tool
+  for its width (its shorter side), the check counted it by its hole
+  field. `gerber.drill_size` now takes the shorter side.
+- DRC agreement 1.1 % (2 matched, 176 offline only, 8 Altium only).
+  Altium's whole list: 6 Board Outline Clearance (silkscreen tracks) and 4
+  Silk To Solder Mask (designator text on pads). Causes found and fixed:
+  - hidden designators and comments (component NAMEON/COMMENTON false)
+    were checked; Altium neither prints nor checks them (`Text.hidden`,
+    also skipped by pour clearances, review and fab-check);
+  - Silk To Solder Mask measured to the mask opening; the rule's
+    CLEARANCETOEXPOSEDCOPPER (true on every fixture and by default)
+    means the copper showing through it;
+  - a negative silk gap (overlap allowed) still flagged overlaps;
+  - the comparison matched by marker position only. Altium's marker is
+    the middle of the violation's box (far from ours on a long track), so
+    `compare_drc.py` now pairs violations by the objects Altium's message
+    names (pad names, text string and position, track ends, either as
+    stored or from the board origin) before falling back to markers.
+  Still approximate: text is checked as a box (0.8 x height per
+  character), so text violations near the limit may differ; the 4
+  ComponentClearance (3D body outlines) are not yet explained.
+
 ## UNVERIFIED (needs Altium)
 
 Run these on the Altium PC, in order. Each says what passing looks like.

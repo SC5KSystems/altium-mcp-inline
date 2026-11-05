@@ -9,17 +9,67 @@
 4. python dev/compare_drc.py offline_drc.json altium_drc.json [--tol 1.0]
 
 Per rule it prints how many violations both found, only we found and only
-Altium found, and lists the differences with locations. Matching: same rule
-name, markers within --tol mm, and the same nets when both sides name them.
-Altium reports coordinates in mils; the offline DRC in mm (both absolute).
+Altium found, and lists the differences with locations. Matching, within one
+rule name: first by the objects Altium's message names (pads by name, text
+by string and position, tracks by their ends; positions taken either as they
+are or from the board origin), then the rest by markers within --tol mm and
+the same nets when both sides name them. Altium's marker is the middle of
+the violation's box, ours the middle of the gap, so long objects need the
+first kind. Altium reports markers in mils; the offline DRC in mm (both
+absolute).
 """
 import argparse
 import json
 import math
+import re
 import sys
 from collections import defaultdict
 
 MIL = 0.0254
+NUM = r"(-?[\d.]+)(mm|mil)"
+PT = r"\(" + NUM + r"\s*,\s*" + NUM + r"\)"
+
+
+def _mm(v, unit):
+    return float(v) * (MIL if unit == "mil" else 1.0)
+
+
+def altium_objects(text):
+    """The objects an Altium violation message names: ("pad", name),
+    ("text", string, x, y), ("track", x1, y1, x2, y2), ("via", x, y)."""
+    out = []
+    for m in re.finditer(r"\bPad ([^\s(]+)\(", text):
+        out.append(("pad", m.group(1)))
+    for m in re.finditer(r'\bText "((?:[^"]|"")*)"\s*' + PT, text):
+        out.append(("text", m.group(1), _mm(*m.group(2, 3)), _mm(*m.group(4, 5))))
+    for m in re.finditer(r"\bTrack\s*" + PT + r"\s*" + PT, text):
+        g = m.groups()
+        out.append(("track", _mm(g[0], g[1]), _mm(g[2], g[3]), _mm(g[4], g[5]), _mm(g[6], g[7])))
+    for m in re.finditer(r"\bVia\s*" + PT, text):
+        out.append(("via", _mm(*m.group(1, 2)), _mm(*m.group(3, 4))))
+    return out
+
+
+def _same(a, objs, shifts, tol=0.02):
+    """Whether Altium's object a is one of our described objects."""
+    for o in objs:
+        at = o.get("at") or []
+        if a[0] == "pad" and o.get("pad") == a[1]:
+            return True
+        for ox, oy in shifts:
+            if a[0] == "text" and o.get("kind") == "text" and o.get("text") == a[1] \
+                    and len(at) == 2 and math.hypot(at[0] - a[2] - ox, at[1] - a[3] - oy) <= tol:
+                return True
+            if a[0] == "via" and o.get("kind") == "via" and len(at) == 2 \
+                    and math.hypot(at[0] - a[1] - ox, at[1] - a[2] - oy) <= tol:
+                return True
+            if a[0] == "track" and o.get("kind") == "track" and len(at) == 4:
+                p, q = (a[1] + ox, a[2] + oy), (a[3] + ox, a[4] + oy)
+                u, v = (at[0], at[1]), (at[2], at[3])
+                if (math.dist(p, u) <= tol and math.dist(q, v) <= tol) or \
+                        (math.dist(p, v) <= tol and math.dist(q, u) <= tol):
+                    return True
+    return False
 
 
 def load(path):
@@ -32,9 +82,10 @@ def altium_rows(data):
     for v in data.get("violations", []):
         x, y = v.get("x"), v.get("y")
         nets = {n for n in (v.get("primitive1_net"), v.get("primitive2_net")) if n}
+        text = v.get("descriptor") or v.get("violation") or ""
         rows.append({"rule": v.get("rule") or "", "x": x * MIL if x is not None else None,
                      "y": y * MIL if y is not None else None, "nets": nets,
-                     "text": v.get("descriptor") or v.get("violation") or ""})
+                     "text": text, "named": altium_objects(text)})
     return rows, data.get("total_violations"), data.get("truncated")
 
 
@@ -43,17 +94,31 @@ def offline_rows(data):
     for v in data.get("violations", []):
         nets = {o.get("net") for o in v.get("objects", []) if o.get("net")}
         rows.append({"rule": v.get("rule") or "", "x": v.get("x"), "y": v.get("y"), "nets": nets,
-                     "text": v.get("message", ""), "approximate": v.get("approximate", False)})
+                     "text": v.get("message", ""), "approximate": v.get("approximate", False),
+                     "objects": v.get("objects", [])})
     return rows
 
 
-def match(ours, theirs, tol):
-    """Greedy nearest matching within each rule name."""
-    pairs, used = [], set()
+def match(ours, theirs, tol, origin=(0.0, 0.0)):
+    """Within each rule name: the same named objects first, then greedy
+    nearest markers."""
+    pairs, used, done = [], set(), set()
     by_rule = defaultdict(list)
     for j, t in enumerate(theirs):
         by_rule[t["rule"].upper()].append(j)
+    shifts = [(0.0, 0.0)] + ([tuple(origin)] if any(origin) else [])
     for i, o in enumerate(ours):
+        for j in by_rule.get(o["rule"].upper(), []):
+            named = theirs[j].get("named") or []
+            if j not in used and named and all(_same(a, o.get("objects", []), shifts)
+                                               for a in named):
+                used.add(j)
+                done.add(i)
+                pairs.append((i, j))
+                break
+    for i, o in enumerate(ours):
+        if i in done:
+            continue
         best = None
         for j in by_rule.get(o["rule"].upper(), []):
             if j in used:
@@ -80,13 +145,14 @@ def main(argv=None):
     ap.add_argument("--tol", type=float, default=1.0, help="marker distance in mm (default 1)")
     ap.add_argument("--show", type=int, default=20, help="differences to list per side")
     a = ap.parse_args(argv)
-    ours = offline_rows(load(a.offline_json))
+    off = load(a.offline_json)
+    ours = offline_rows(off)
     theirs, total, truncated = altium_rows(load(a.altium_json))
     if truncated:
         print(f"warning: Altium's list was truncated ({len(theirs)} of {total}); raise "
               "max_violations", file=sys.stderr)
     ours_cmp = [o for o in ours if not o["rule"].startswith("dfm:")]
-    pairs = match(ours_cmp, theirs, a.tol)
+    pairs = match(ours_cmp, theirs, a.tol, off.get("origin_mm") or (0.0, 0.0))
     mi, mj = {i for i, _ in pairs}, {j for _, j in pairs}
     rules = sorted({o["rule"] for o in ours_cmp} | {t["rule"] for t in theirs})
     print(f"{'rule':32s} {'both':>6s} {'offline only':>13s} {'Altium only':>12s}")

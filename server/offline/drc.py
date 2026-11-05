@@ -162,6 +162,9 @@ class DRC:
     def has_rules(self, kind):
         return bool(self.rules.of_kind(kind))
 
+    def _texts(self):
+        return [t for t in self.doc.texts if not t.hidden]
+
     def describe(self, obj, kind=None):
         doc = self.doc
         kind = kind or getattr(obj, "KIND", "?")
@@ -181,6 +184,13 @@ class DRC:
             d["polygon"] = obj.polygon
         if getattr(obj, "KIND", "") == "text":
             d["text"] = obj.text
+        k = getattr(obj, "KIND", "")
+        if k in ("track", "fill"):
+            d["at"] = [round(v, 4) for v in (obj.x1, obj.y1, obj.x2, obj.y2)]
+        elif k in ("pad", "via", "text"):
+            d["at"] = [round(obj.x, 4), round(obj.y, 4)]
+        elif k == "arc":
+            d["at"] = [round(obj.cx, 4), round(obj.cy, 4)]
         if getattr(obj, "is_keepout", False):
             d["keepout"] = True
         return d
@@ -223,7 +233,7 @@ class DRC:
                 h = geom.hole_shape(obj)
                 if not h.is_empty and self._in_box(h):
                     items.append(_Item(obj, "hole", obj.effective_net, h, layer, hole=True))
-        for t in (doc.texts if self.text else []):
+        for t in (self._texts() if self.text else []):
             if t.layer == layer:
                 g = geom.text_box(t)
                 if self._in_box(g):
@@ -584,7 +594,7 @@ class DRC:
                     g = geom.copper_shape(r, layer)
                     if not g.is_empty and self._in_box(g):
                         out.append(_Item(r, kind, None, g, layer))
-        for t in (doc.texts if self.text else []):
+        for t in (self._texts() if self.text else []):
             if t.layer == layer:
                 g = geom.text_box(t)
                 if self._in_box(g):
@@ -632,39 +642,50 @@ class DRC:
                 for r in lst:
                     if r.layer == overlay and (kind != "region" or r.kind == "copper"):
                         silk.append((r, geom.copper_shape(r, overlay), False))
-            for t in (doc.texts if self.text else []):
+            for t in (self._texts() if self.text else []):
                 if t.layer == overlay:
                     silk.append((t, geom.text_box(t), True))
             silk = [s for s in silk if not s[1].is_empty and self._in_box(s[1])]
+            # (object, mask opening, copper showing through it)
             openings = []
             for p in doc.pads:
                 if p.on_layer(copper):
                     g = geom.pad_shape(p, copper)
                     if not g.is_empty:
-                        openings.append((p, g.buffer(self.rules.solder_mask_expansion(p),
-                                                     join_style="mitre")))
+                        hole = g.buffer(self.rules.solder_mask_expansion(p), join_style="mitre")
+                        openings.append((p, hole, g.intersection(hole)))
             for v in doc.vias:
                 if v.spans(copper, doc.copper_layers) and not self.rules.tented(v, side):
-                    openings.append((v, geom.via_shape(v, copper,
-                                                       self.rules.solder_mask_expansion(v))))
+                    hole = geom.via_shape(v, copper, self.rules.solder_mask_expansion(v))
+                    openings.append((v, hole, geom.via_shape(v, copper).intersection(hole)))
             if not silk or not openings:
                 continue
             reach = max(c.length("MINSILKSCREENTOMASKGAP")
                         for c in self.rules.of_kind("SilkToSolderMaskClearance")) + TOL
-            tree = sh.STRtree([g for _o, g in openings])
+            tree = sh.STRtree([g for _o, g, _c in openings])
             for s_obj, s_shape, approx in silk:
                 for k in tree.query(s_shape, predicate="dwithin", distance=reach):
-                    o, g = openings[k]
+                    o, g, exposed = openings[k]
                     gap, rule = self.rules.silk_to_mask(o, s_obj)
                     if gap is None:
                         continue
+                    # Altium's "Check Clearance To": exposed copper (the default) or
+                    # the solder mask opening
+                    to_copper = str(rule.rule.props.get("CLEARANCETOEXPOSEDCOPPER", "TRUE")
+                                    ).upper() != "FALSE"
+                    if to_copper:
+                        g = exposed
+                        if g.is_empty:
+                            continue
                     d = s_shape.distance(g)
-                    if d < gap - TOL or (gap <= 0 and s_shape.intersection(g).area > 1e-6):
+                    # a zero gap still forbids overlap; a negative one allows it
+                    if d < gap - TOL or (abs(gap) <= TOL and s_shape.intersection(g).area > 1e-6):
                         p = sh.shortest_line(s_shape, g).interpolate(0.5, normalized=True)
                         da, db = self.describe(o), self.describe(s_obj)
                         self.add(rule.name, "SilkToSolderMaskClearance", L.name(overlay), (p.x, p.y),
                                  d, gap, [da, db],
-                                 f"Silk {self._label(db)} {d:.4f} mm from the mask opening of "
+                                 f"Silk {self._label(db)} {d:.4f} mm from the "
+                                 f"{'exposed copper' if to_copper else 'mask opening'} of "
                                  f"{self._label(da)} < {gap:.4f} mm" +
                                  (" (overlaps)" if d <= 0 else ""), approx)
 
@@ -766,6 +787,7 @@ class DRC:
             "unevaluated_rules": self.rules.unevaluated,
             "skipped": self.skipped,
             "warnings": self.doc.board_warnings(),
+            "origin_mm": list(self.doc.origin),
             "seconds": self.seconds,
             "violations": [v.as_dict() for v in self.violations],
         }

@@ -156,6 +156,51 @@ class Checks(unittest.TestCase):
         d = run(s, checks=["SilkToSolderMaskClearance"])
         self.assertEqual(len(d.violations), 1)
 
+    def test_silk_measured_to_exposed_copper_or_mask_opening(self):
+        """Altium's rule measures to the copper showing through the mask
+        (CLEARANCETOEXPOSEDCOPPER, the default) or to the mask opening."""
+        for to_copper, found in (("TRUE", 0), ("FALSE", 1)):
+            s = Synth(40, 30)
+            s.net("A")
+            s.rule("SilkToSolderMaskClearance", "SilkToSolderMaskClearance",
+                   MINSILKSCREENTOMASKGAP=0.1, CLEARANCETOEXPOSEDCOPPER=to_copper)
+            s.rule("SolderMaskExpansion", "SolderMaskExpansion", EXPANSION=0.05)
+            s.component("R1", "R0805", 10, 10)
+            s.pad("R1", "1", 10, 10, 1.0, 1.0, net="A")
+            # 0.12 mm from the copper, 0.07 mm from the mask opening
+            s.track("Top Overlay", 9, 10.695, 11, 10.695, 0.15)
+            d = run(s, checks=["SilkToSolderMaskClearance"])
+            self.assertEqual(len(d.violations), found, to_copper)
+
+    def test_negative_silk_gap_allows_overlap(self):
+        for gap, found in ((0.0, 1), (-0.5, 0)):
+            s = Synth(40, 30)
+            s.net("A")
+            s.rule("SilkToSolderMaskClearance", "SilkToSolderMaskClearance",
+                   MINSILKSCREENTOMASKGAP=gap)
+            s.component("R1", "R0805", 10, 10)
+            s.pad("R1", "1", 10, 10, 1.0, 1.0, net="A")
+            s.track("Top Overlay", 9, 10, 11, 10, 0.15)           # across the pad
+            d = run(s, checks=["SilkToSolderMaskClearance"])
+            self.assertEqual(len(d.violations), found, gap)
+
+    def test_hidden_designator_is_not_checked(self):
+        s = board()
+        s.component("R1", "R0805", 10, 10)
+        s.pad("R1", "1", 10, 10, 1.0, 1.0, net="A")
+        s.text("R1", 9.5, 9.5, 1.0, component=0, designator=True)
+        doc = s.build()
+        t = doc.texts[0]
+        self.assertTrue(t.is_designator)
+        d = DRC(doc, checks=["SilkToSolderMaskClearance"], text=True)
+        d.run()
+        self.assertEqual(len(d.violations), 1)
+        doc.components[0].props.set("NAMEON", "FALSE")
+        self.assertTrue(t.hidden)
+        d = DRC(doc, checks=["SilkToSolderMaskClearance"], text=True)
+        d.run()
+        self.assertEqual(d.violations, [])
+
     def test_unrouted(self):
         s = board()
         s.component("R1", "R0805", 10, 10)
@@ -231,6 +276,36 @@ class AgainstAltium(unittest.TestCase):
         self.assertEqual(cmp_["matched"], 2)
         self.assertEqual(cmp_["missed"], [])
         self.assertEqual(cmp_["ours_not_cached_same_kinds"], 0)
+
+
+class CompareWithAltium(unittest.TestCase):
+    """dev/compare_drc.py pairs violations by the objects Altium names, since
+    its marker (the middle of the violation's box) can sit far from ours."""
+
+    def test_named_objects_match_whatever_the_markers(self):
+        sys.path.insert(0, str(HERE.parent.parent / "dev"))
+        import compare_drc as C
+        altium = {"violations": [
+            {"rule": "SilkMask", "x": 1000.0, "y": 1000.0, "descriptor":
+             'Silk To Solder Mask Clearance Constraint: (Collision < 0.127mm) Between Pad '
+             'U1-7(10mm,20mm) on Multi-Layer And Text "R9" (12.5mm,20.25mm) on Top Overlay'},
+            {"rule": "Outline", "x": 0.0, "y": 0.0, "descriptor":
+             "Board Outline Clearance(Outline Edge): (Collision < 0.2mm) Between Board Edge "
+             "And Track (5mm,10mm)(5mm,50mm) on Top Overlay"}]}
+        offline = {"origin_mm": [100.0, 200.0], "violations": [
+            {"rule": "SilkMask", "x": 111.0, "y": 220.0, "objects": [
+                {"kind": "pad", "pad": "U1-7", "at": [110.0, 220.0]},
+                {"kind": "text", "text": "R9", "at": [112.5, 220.25]}]},
+            {"rule": "Outline", "x": 105.0, "y": 249.0, "objects": [
+                {"kind": "track", "at": [105.0, 250.0, 105.0, 210.0]}]},
+            {"rule": "Outline", "x": 105.0, "y": 249.0, "objects": [
+                {"kind": "track", "at": [106.0, 250.0, 106.0, 210.0]}]}]}
+        theirs, _, _ = C.altium_rows(altium)
+        self.assertEqual(theirs[0]["named"], [("pad", "U1-7"), ("text", "R9", 12.5, 20.25)])
+        pairs = C.match(C.offline_rows(offline), theirs, 1.0, offline["origin_mm"])
+        self.assertEqual(sorted(pairs), [(0, 0), (1, 1)])
+        self.assertEqual(C.altium_objects("Track (100mil,0mil)(200mil,0mil)"),
+                         [("track", 2.54, 0.0, 5.08, 0.0)])
 
 
 if __name__ == "__main__":

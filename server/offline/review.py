@@ -153,7 +153,8 @@ def review(doc, currents=None, edge=1.0, rise=10.0):
     # polarity marking
     over = {}
     for prim in list(doc.tracks) + list(doc.arcs) + list(doc.texts):
-        if prim.layer in (L.TOP_OVERLAY, L.BOTTOM_OVERLAY) and prim.component is not None:
+        if prim.layer in (L.TOP_OVERLAY, L.BOTTOM_OVERLAY) and prim.component is not None \
+                and not getattr(prim, "hidden", False):
             over.setdefault(prim.component, []).append(prim)
     for c in doc.components:
         if not _polarized(c):

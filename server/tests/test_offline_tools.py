@@ -267,6 +267,11 @@ class FabCheck(unittest.TestCase):
         rout = "M48\nMETRIC\nT1C0.800\n%\nT1\nG00X1.0Y2.0\nM15\nG01X3.0Y2.0\nM16\nG05\nM30\n"
         r = gerber.parse_drill(rout, "slots.drl")
         self.assertEqual(r["holes"], [(2.0, 2.0, 0.8)], "a routed slot is one hole at its middle")
+        from types import SimpleNamespace as P
+        # drill files list a slot under the tool for its width, either field may be shorter
+        self.assertEqual(gerber.drill_size(P(hole=2.2, slot_size=0.9, hole_shape="slot")), 0.9)
+        self.assertEqual(gerber.drill_size(P(hole=0.8, slot_size=2.0, hole_shape="slot")), 0.8)
+        self.assertEqual(gerber.drill_size(P(hole=1.1, slot_size=0.0, hole_shape="round")), 1.1)
 
     def test_against_a_board(self):
         from offline import gerber

@@ -685,7 +685,7 @@ class Run:
         (self.dir / "drc_compare.txt").write_text(buf.getvalue(), encoding="utf-8")
         ours = [o for o in C.offline_rows(off) if not o["rule"].startswith("dfm:")]
         theirs, total, truncated = C.altium_rows(alt)
-        pairs = C.match(ours, theirs, 1.0)
+        pairs = C.match(ours, theirs, 1.0, off.get("origin_mm") or (0.0, 0.0))
         union = len(ours) + len(theirs) - len(pairs)
         agree = len(pairs) / union if union else 1.0     # both clean is agreement
         detail = (f"agreement {agree:.1%}: {len(pairs)} matched, {len(ours) - len(pairs)} offline "

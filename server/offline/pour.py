@@ -126,7 +126,7 @@ class _LayerIndex:
                 if not h.is_empty:
                     items.append(_Item(obj, obj.KIND, obj.effective_net, h, hole=True))
         for t in doc.texts:
-            if t.layer == layer and not t.is_keepout:
+            if t.layer == layer and not t.is_keepout and not t.hidden:
                 items.append(_Item(t, "text", None, geom.text_box(t)))
         for kind, lst in (("track", doc.tracks), ("arc", doc.arcs), ("fill", doc.fills),
                           ("region", doc.regions)):

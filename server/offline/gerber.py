@@ -326,7 +326,8 @@ def expected(doc):
         if any(p.layer in (lay, L.MULTI) for p in doc.pads):
             need[f"mask:{side}"] = f"pads on the {side}"
         over = L.TOP_OVERLAY if lay == L.TOP else L.BOTTOM_OVERLAY
-        if any(o.layer == over for o in list(doc.tracks) + list(doc.arcs) + list(doc.texts)):
+        if any(o.layer == over for o in list(doc.tracks) + list(doc.arcs) +
+               [t for t in doc.texts if not t.hidden]):
             need[f"silk:{side}"] = f"silkscreen on the {side}"
     need["outline"] = "the board outline"
     if any(p.hole > 0 for p in doc.pads) or len(doc.vias):
@@ -334,8 +335,16 @@ def expected(doc):
     return need
 
 
+def drill_size(p):
+    """The tool a pad's hole is drilled with: a slot's width (its shorter
+    side, as drill files list slots), else the hole."""
+    if p.hole_shape == "slot" and p.slot_size > 0:
+        return min(p.hole, p.slot_size)
+    return p.hole
+
+
 def board_holes(doc):
-    out = [(p.x, p.y, round(p.hole, 4), bool(p.plated)) for p in doc.pads if p.hole > 0]
+    out = [(p.x, p.y, round(drill_size(p), 4), bool(p.plated)) for p in doc.pads if p.hole > 0]
     out += [(v.x, v.y, round(v.hole, 4), True) for v in doc.vias if v.hole > 0]
     return out
 

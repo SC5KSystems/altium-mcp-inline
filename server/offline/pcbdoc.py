@@ -856,6 +856,20 @@ class Text(BinRecord):
         return self._has(42, 1) and bool(self.subs[0][41])
 
     @property
+    def hidden(self):
+        """A designator or comment its component does not show (NAMEON or
+        COMMENTON false): Altium neither prints nor checks it."""
+        c = self.component
+        if c is None or c >= len(self.doc.components):
+            return False
+        props = self.doc.components[c].props
+        if self.is_designator:
+            return str(props.get("NAMEON", "TRUE")).upper() == "FALSE"
+        if self.is_comment:
+            return str(props.get("COMMENTON", "TRUE")).upper() == "FALSE"
+        return False
+
+    @property
     def widestring_index(self):
         return self._get("I", 115) if self._has(115, 4) else None
 
