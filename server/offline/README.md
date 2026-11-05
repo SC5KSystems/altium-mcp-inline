@@ -26,6 +26,7 @@ Read, check, edit and write Altium `.PcbDoc` files without Altium. Run from the
     python -m offline fab-check board.PcbDoc gerbers/         # Gerber/drill read-back
     python -m offline models3d board.PcbDoc                   # embedded STEP sanity
     python -m offline membership-audit --board-path "C:\b\x.PcbDoc" -o audit.pas  # live script
+    python -m offline example -o folder                       # the worked example below
 
 All lengths are millimetres. Coordinates are absolute (database) coordinates,
 Y up, as the file stores them; `PcbDoc.origin` gives the user origin.
@@ -67,6 +68,7 @@ scipy, Pillow; olefile for tests).
 | `gerber.py` | Gerber/Excellon read-back against the board, fab readiness |
 | `models3d.py` | embedded STEP models against their footprints |
 | `audit.py` | live script: primitives whose Net disagrees with their net's member group |
+| `example.py` | the worked example: a synthetic board through ECO, copper, pour, DRC, render |
 | `synth.py` | small synthetic boards for tests |
 | `fixtures.py` | where tests find real boards |
 
@@ -106,7 +108,16 @@ names renames, merges, splits and single-pin moves as well as parts to add,
 remove or re-footprint. `eco apply` turns that into an EditPlan (merges first
 so tracks and pours follow) and, with `-o`, writes the board and lists the
 gaps left to route. `eco gaps` finds pieces of a net that are not joined,
-e.g. both sides of a removed part once its nets are merged.
+e.g. both sides of a removed part once its nets are merged. In place of the
+project, a netlist `.json` works too (a schematic from another tool, or one
+written by hand):
+
+    {"parts": {"J1": {"footprint": "CONN2", "comment": "", "unique_id": "ABCDEFGH",
+                      "pins": ["1", "2"]}},
+     "nets": {"VBAT": ["J1.1", "Q1.D"], "GND": ["J1.2"]}}
+
+A pin is `DES.PIN` or `[DES, PIN]`; pins named in nets join their part;
+a pin on two nets or of an unlisted part is an error.
 
 ## Power copper
 
@@ -219,3 +230,105 @@ seen in its log is a version check). `--allow-network` lifts the block. Its auto
   primitive whose Net is set but which is not in that group; `--fix`
   repairs the groups. `dev/probe_processes.py` tries candidate processes for
   a dialog-free DRC or Update PCB, one per run.
+
+## MCP tools
+
+`server/offline_tools.py` makes these tools available to the MCP client
+next to the Altium ones (`main.py` registers them; `ALTIUM_MCP_OFFLINE_TOOLS=0`
+leaves them out). They run in a worker thread and answer JSON with `ok`;
+a failure answers `ok: false` and the error, never a partial result. Every
+docstring says when to use the tool.
+
+| Tool | Use it to |
+|---|---|
+| `offline_pcb_info` | learn a board file's nets, parts, layers and size (start here) |
+| `offline_pcb_rules` | list its rules and the scopes the offline DRC cannot evaluate |
+| `offline_pcb_connectivity` | find islands, open connections, shorts, dead copper |
+| `offline_pcb_net_gaps` | find where a net's copper is apart (after an ECO) |
+| `offline_pcb_render` | see the board, a net, a zoom, markers, current density or a diff (PNG shown inline) |
+| `offline_pcb_drc` | check the board against its own rules (plus fab presets) |
+| `offline_pcb_pdn` | voltage drop and current density of one net |
+| `offline_pcb_review_power` | first screen of a power board |
+| `offline_pcb_thermal` | hot spots from current and part losses (a screen) |
+| `offline_pcb_via_array` | size vias for a current (no board needed) |
+| `offline_pcb_fuse_check` | copper after a fuse against the fuse |
+| `offline_pcb_fet_screen` | current density into FET pads |
+| `offline_pcb_notches` | same-net pours that nearly meet, with a merge plan |
+| `offline_pcb_stack_check` | two boards joined by mating headers |
+| `offline_pcb_fab_check` | Gerber and drill files against the board |
+| `offline_pcb_models3d` | embedded STEP models against their footprints |
+| `offline_pcb_apply_plan` | apply an EditPlan and write a new board (or dry run) |
+| `offline_pcb_live_scripts` | the same plan as sandbox scripts for the open board |
+| `offline_pcb_eco_preview`, `offline_pcb_eco_apply` | bring a board in line with its schematic |
+| `offline_pcb_copper_plan` | plan power copper for a current |
+| `offline_pcb_repour` | pour polygons, compare with the saved pours, write |
+| `offline_pcb_autoroute` | route open signal connections with Freerouting |
+| `offline_pcb_blank_board` | start a new board from a template |
+| `offline_pcb_assembly_page` | write a hand-assembly page |
+| `offline_pcb_membership_audit_script` | a live script for stale net membership |
+
+Paths must be absolute (a relative one would resolve against the server's
+own working folder). Writers take an output path and refuse to write onto
+an input, onto the N: drive, or over an existing Altium design file unless
+`overwrite` is true.
+The offline requirements must be installed in the server's own Python
+(`server\.venv\Scripts\python.exe -m pip install -r server\offline\requirements.txt`);
+without them the tools load but each one answers with that install line.
+If the module cannot load at all, a single `offline_pcb_unavailable` tool
+says why.
+
+## Worked example
+
+`python -m offline example -o folder` builds a two-layer 2 oz board (made
+up: J1 feeds VIN, R2 links VIN to VBAT, Q1 switches VBAT to VOUT at J2, U1
+drives the gate, C1 decouples, GND is a bottom pour, and the VBAT track to
+Q1 is 0.6 mm) and runs the session below through the same functions the MCP
+tools are. The calls, as a model would make them (paths shortened):
+
+1. Load: `offline_pcb_info(board="input.PcbDoc")`: 5 nets, 6 parts, 60 x 40 mm.
+2. ECO: the schematic drops R2 and joins VIN into VBAT (`schematic_netlist.json`).
+   `offline_pcb_eco_preview(schematic="schematic_netlist.json", board="input.PcbDoc")`
+   says remove R2, merge VIN into VBAT;
+   `offline_pcb_eco_apply(..., out="eco.PcbDoc", plan_out="eco_plan.json")`
+   writes it (2 ops: `remove_component`, `merge_nets`).
+3. Gap list: `offline_pcb_net_gaps(board="eco.PcbDoc", nets=["VBAT"])`: one
+   gap, 4.85 mm, where R2 was.
+4. Copper plan: `offline_pcb_copper_plan(board="eco.PcbDoc", plan={"net": "VBAT",
+   "sources": ["J1.1"], "sinks": ["Q1.D"], "current": 30, "targets":
+   {"density_a_per_mm2": 40, "drop_mv": 30}, "res": 0.25}, plan_out="copper_plan.json")`:
+   targets met, 18 mV, 38 A/mm2 at the worst 1 mm window, 20 vias; then
+   `offline_pcb_apply_plan(board="eco.PcbDoc", plan="copper_plan.json", out="planned.PcbDoc")`.
+5. Pour: `offline_pcb_repour(board="planned.PcbDoc", out="final.PcbDoc")`: the
+   GND pour flows around the new copper in one piece.
+6. DRC: `offline_pcb_drc(board="final.PcbDoc", copper="saved")`: 0 violations;
+   `offline_pcb_connectivity`: nothing open, no shorts.
+7. Render: `offline_pcb_render` of the input, the result (VBAT highlighted)
+   and `diff=` between them.
+8. Write: `final.PcbDoc` is the result. In Altium: open it, Repour All, run
+   the DRC (the offline result is not proof Altium agrees).
+
+The run takes a few seconds; `server/tests/test_offline_mcp.py` runs it and
+checks the story (the two ECO ops, the one 4.85 mm gap, targets met, a clean
+DRC and connectivity, inputs never written).
+
+## Acceptance on the Altium PC
+
+`dev/live_validate_tools.py` runs, in one command, every check that needs
+Altium, safest first, on a copy of a board you name:
+
+    server\.venv\Scripts\python.exe dev\live_validate_tools.py C:\boards\x.PcbDoc
+        [--work C:\scratch\offline_check] [--project x.PrjPcb] [--gerbers outputs]
+        [--power VBAT:30:J1.1>Q1.D] [--wedge] [--list] [--only STEP] [--no-ask]
+
+It never writes the named board (it checks its hash at the end) or the N:
+drive. Steps: requirements and registration; read and time the copy; write
+the test files (writer steps, pours stored three ways, blank board, live
+scripts, audit body, and when possible a copper plan, an autorouted copy, an
+ECO preview and a fab check); a script refused before Altium sees it; with
+Altium closed, a refused script that does not start Altium; a sandbox body;
+you open each written file and answer y/n; Altium's Repour All against the
+offline pour (IoU); the membership audit on the open copy; offline DRC
+against Altium's markers (90 % agreement); live scripts that edit and save
+the copy, read back offline; and with `--wedge` a deliberate wedge and
+recovery. It prints PASS / FAIL / SKIP / MANUAL per step and saves
+`results.json`.

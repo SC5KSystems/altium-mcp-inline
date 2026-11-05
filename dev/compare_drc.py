@@ -102,7 +102,8 @@ def main(argv=None):
             for r in rest[:a.show]:
                 at = f"({r['x']:.3f}, {r['y']:.3f})" if r["x"] is not None else ""
                 print(f"  {r['rule']}: {at} {r['text'][:140]}")
-    agree = len(pairs) / max(1, len(ours_cmp) + len(theirs) - len(pairs))
+    union = len(ours_cmp) + len(theirs) - len(pairs)
+    agree = len(pairs) / union if union else 1.0     # both clean is agreement
     print(f"\nagreement {agree:.1%} ({len(pairs)} matched, {len(ours_cmp) - len(pairs)} offline "
           f"only, {len(theirs) - len(pairs)} Altium only)")
     return 0

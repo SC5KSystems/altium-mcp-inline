@@ -7,10 +7,11 @@
     python -m offline eco gaps board.PcbDoc [--net VBAT]
 
 The schematic side comes from sch.py (parts, pins and the netlist of every
-sheet in the project). Parts are matched by designator. Nets are compared by
-membership, pin by pin, so the preview tells a rename (same pins, new name)
-from a merge (one schematic net holding pins of several board nets) and a
-split (one board net whose pins now belong to several).
+sheet in the project), or from a netlist .json in place of the project
+(sch.Netlist.from_dict says the form). Parts are matched by designator. Nets
+are compared by membership, pin by pin, so the preview tells a rename (same
+pins, new name) from a merge (one schematic net holding pins of several board
+nets) and a split (one board net whose pins now belong to several).
 
 apply writes an EditPlan (editplan.py): remove dropped parts, merge and
 rename nets so tracks and pours follow, move the remaining pins, swap changed
@@ -36,9 +37,12 @@ class EcoError(ValueError):
 # ---------------------------------------------------------------- inputs
 
 def load_netlist(source):
-    """A Netlist from a .PrjPcb, one or more .SchDoc paths, or a Netlist."""
+    """A Netlist from a .PrjPcb, one or more .SchDoc paths, a netlist .json
+    (see Netlist.from_dict), a dict in that form, or a Netlist."""
     if isinstance(source, Netlist):
         return source, None
+    if isinstance(source, dict):
+        return Netlist.from_dict(source), None
     if isinstance(source, (list, tuple)):
         prj = Project.from_sheets(source)
         return prj.netlist(), prj
@@ -49,7 +53,9 @@ def load_netlist(source):
     if p.suffix.lower() == ".schdoc":
         prj = Project.from_sheets([p])
         return prj.netlist(), prj
-    raise EcoError(f"{source}: give a .PrjPcb or .SchDoc")
+    if p.suffix.lower() == ".json":
+        return Netlist.from_dict(json.loads(p.read_text(encoding="utf-8"))), None
+    raise EcoError(f"{source}: give a .PrjPcb, .SchDoc or netlist .json")
 
 
 def board_view(doc):
@@ -448,8 +454,8 @@ def register_commands(command):
     def build(p):
         p.add_argument("action", choices=("preview", "link", "apply", "swap", "gaps"))
         p.add_argument("inputs", nargs="+",
-                       help="preview/link/apply: project [board]; swap: board designator "
-                            "footprint; gaps: board")
+                       help="preview/link/apply: project (.PrjPcb, .SchDoc or netlist "
+                            ".json) [board]; swap: board designator footprint; gaps: board")
         p.add_argument("--lib", action="append", help="footprint source (.PcbLib or .PcbDoc)")
         p.add_argument("--plan", help="apply: write the EditPlan here")
         p.add_argument("-o", "--out", help="write the changed board here (never the input)")

@@ -309,6 +309,64 @@ class Netlist:
                 out[p] = name
         return out
 
+    @classmethod
+    def from_dict(cls, data):
+        """A netlist written by hand or by another tool:
+
+            {"parts": {"J1": {"footprint": "CONN2", "comment": "", "unique_id": "ABCDEFGH",
+                              "pins": ["1", "2"]}, ...},
+             "nets": {"VBAT": ["J1.1", "Q1.D"], ...}}
+
+        A pin is "DES.PIN" (split at the first '.') or [DES, PIN]. Pins named
+        in nets are added to their part; a pin of a part not listed, or a pin
+        on two nets, is an error."""
+        if not isinstance(data, dict) or not isinstance(data.get("parts"), dict) or \
+                not isinstance(data.get("nets"), dict):
+            raise SchError("a JSON netlist needs 'parts' and 'nets' objects")
+        out = cls()
+        for des, info in data["parts"].items():
+            info = dict(info or {})
+            uid = str(info.get("unique_id") or "")
+            fp = str(info.get("footprint") or "")
+            out.parts[des] = {
+                "designator": des, "footprint": fp,
+                "footprints": list(info.get("footprints") or ([fp] if fp else [])),
+                "comment": str(info.get("comment") or ""),
+                "libref": str(info.get("libref") or ""), "unique_id": uid,
+                "unique_ids": list(info.get("unique_ids") or ([uid] if uid else [])),
+                "sheet": str(info.get("sheet") or "netlist.json"),
+                "pins": sorted({str(p) for p in info.get("pins") or []}, key=natural_key),
+                "units": [1]}
+        seen = {}
+        for name, pins in data["nets"].items():
+            members = set()
+            for p in pins:
+                if isinstance(p, (list, tuple)) and len(p) == 2:
+                    des, pin = str(p[0]), str(p[1])
+                elif isinstance(p, str) and "." in p:
+                    des, pin = p.split(".", 1)
+                else:
+                    raise SchError(f"net {name}: pin {p!r} is not 'DES.PIN' or [DES, PIN]")
+                if des not in out.parts:
+                    raise SchError(f"net {name}: {des} is not in 'parts'")
+                if (des, pin) in seen and seen[(des, pin)] != name:
+                    raise SchError(f"{des}.{pin} is on both {seen[(des, pin)]} and {name}")
+                seen[(des, pin)] = name
+                members.add((des, pin))
+                part = out.parts[des]
+                if pin not in part["pins"]:
+                    part["pins"] = sorted(set(part["pins"]) | {pin}, key=natural_key)
+            out.nets[str(name)] = members
+        return out
+
+    def to_dict(self):
+        """The inverse of from_dict (pins as "DES.PIN")."""
+        parts = {d: {k: p[k] for k in ("footprint", "comment", "unique_id", "libref", "pins")}
+                 for d, p in self.parts.items()}
+        nets = {n: sorted((f"{d}.{p}" for d, p in pins), key=natural_key)
+                for n, pins in self.nets.items()}
+        return {"parts": parts, "nets": nets}
+
 
 class Project:
     def __init__(self, sheets, settings=None, path=None, pcb=None):

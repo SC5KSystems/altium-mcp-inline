@@ -124,7 +124,7 @@ def _load_plugins():
     import importlib
     for mod in ("render", "editplan", "drc", "pour", "eco", "copper", "thermal", "power",
                 "specctra", "autoroute", "audit", "notch", "review", "blank", "stack",
-                "assembly", "gerber", "models3d"):
+                "assembly", "gerber", "models3d", "example"):
         try:
             m = importlib.import_module(f".{mod}", __package__)
         except ImportError as e:

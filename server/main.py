@@ -3873,6 +3873,26 @@ async def get_server_status(ctx: Context) -> str:
     
     return json.dumps(status, indent=2)
 
+# Offline PCB tools (offline_pcb_*): read, check, plan and write .PcbDoc files
+# without Altium. They live in offline_tools.py and offline/, need no pywin32,
+# and import their numeric dependencies only when called. If they cannot be
+# registered, one stub tool says why, so the failure reaches the caller too.
+try:
+    import offline_tools
+    _offline_tool_names = offline_tools.register(mcp)
+    logger.info(f"Registered {len(_offline_tool_names)} offline_pcb_* tools")
+except Exception as _offline_error:
+    logger.exception("Offline PCB tools (offline_pcb_*) failed to load")
+    _offline_message = f"{type(_offline_error).__name__}: {_offline_error}"
+
+    @mcp.tool()
+    async def offline_pcb_unavailable(ctx: Context) -> str:
+        """The offline PCB tools (offline_pcb_*) failed to load on this server.
+        Call this to see why."""
+        return json.dumps({"success": False, "error": _offline_message,
+                           "hint": "see altium_mcp.log; the offline tools live in "
+                                   "server/offline_tools.py and server/offline/"})
+
 if __name__ == "__main__":
     logger.info("Starting Altium MCP Server...")
     logger.info(f"Using MCP directory: {MCP_DIR}")

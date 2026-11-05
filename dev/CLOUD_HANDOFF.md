@@ -39,7 +39,8 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 | WP6 offline ECO | done offline; Altium's view of ECO'd boards UNVERIFIED | `cd73856` |
 | WP7 power copper: planner, thermal, vias, fuse, FETs | done offline; Altium's view of planned copper UNVERIFIED; thermal accuracy is a screen | `111dd83` |
 | WP8 autorouter bridge: DSN export, Freerouting, SES import | done; routed here with Freerouting 2.5.0 on Java 25; Altium's view of routed boards and a Windows run UNVERIFIED | `bd242ab` |
-| WP9 small tools: review-power, notches, stack, blank, assembly, fab-check, models3d, membership-audit, probe_processes | done offline; the live script, the probe and Altium opening a blank board UNVERIFIED | see git log ("small tools") |
+| WP9 small tools: review-power, notches, stack, blank, assembly, fab-check, models3d, membership-audit, probe_processes | done offline; the live script, the probe and Altium opening a blank board UNVERIFIED | `902da45` |
+| WP10 MCP tools (`offline_pcb_*`), worked example, JSON netlist, `dev/live_validate_tools.py` | done; tools registered and called through FastMCP 1.5.0 here; the MCP server on Windows and the acceptance script against a real Altium UNVERIFIED | see git log ("MCP tools") |
 
 ## How to run
 
@@ -74,6 +75,9 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 - Membership audit (live): `python -m offline membership-audit --board-path "C:\...\x.PcbDoc" [--fix] -o audit.pas`, then run the body with `run_altium_script`
 - Process probe (live): `python dev/probe_processes.py --list`; `--board C:\scratch\copy.PcbDoc --next`
 - Second reader (Linux, KiCad installed): `python3.12 dev/kicad_read.py a.PcbDoc b.PcbDoc`
+- Worked example: `python -m offline example [-o folder]` (synthetic board: load, ECO, gaps, copper plan, pour, DRC, render, write)
+- MCP tools: `server/offline_tools.py`, registered by `main.py` (26 `offline_pcb_*` tools; `ALTIUM_MCP_OFFLINE_TOOLS=0` turns them off). Install their requirements into the server's Python once: `server\.venv\Scripts\python.exe -m pip install -r server\offline\requirements.txt`
+- Acceptance on the Altium PC, one command: `server\.venv\Scripts\python.exe dev\live_validate_tools.py C:\boards\x.PcbDoc [--project x.PrjPcb] [--gerbers folder] [--power VBAT:30:J1.1>Q1.D] [--wedge]` (`--list` for the steps)
 - All offline tests: `python -m unittest discover -s server/tests -p "test_[!a]*.py"`.
   The pattern leaves out `test_altium_script.py`, the pre-existing live
   integration test, which errors at setUpClass on any machine without
@@ -484,9 +488,45 @@ builder), `autoroute.py` (net selection, Freerouting runner, report).
   both pass preflight. The audit's fix loop is capped per net so a removal
   that does not take cannot hang Altium.
 
+## WP10 notes (MCP tools, example, acceptance)
+
+- `server/offline_tools.py`: 26 tools, each a plain function returning a
+  dict (so Python can call them) plus `register(mcp)`, which wraps them as
+  async tools that run in a worker thread. Checked here against the pinned
+  `mcp==1.5.0` (FastMCP): all 26 list with correct schemas, calls answer
+  JSON, `offline_pcb_render` answers text plus an inline PNG (under 900 kB),
+  two calls run at once, and errors come back `ok: false` with the message.
+  `main.py` was imported with stubbed win32 modules: 58 Altium tools plus the
+  26 offline ones; with `offline_tools` made to fail, the single
+  `offline_pcb_unavailable` tool reports the error instead.
+- Every writer goes through one check: no output onto an input (`samefile`,
+  else normalised paths), none on the N: drive (raw string or resolved
+  drive), no existing `.PcbDoc/.PcbLib/.SchDoc/...` replaced without
+  `overwrite=true`. Pictures, plans and reports may be replaced. Paths must
+  be absolute: the server's working folder is wherever the client started
+  it, so a relative path would land somewhere nobody looks.
+- The ECO takes a netlist `.json` (`sch.Netlist.from_dict`) as well as a
+  project, so a schematic from elsewhere, or the worked example's edited
+  schematic, needs no SchDoc writer.
+- Worked example (`python -m offline example`): ECO removes R2 and merges
+  VIN into VBAT (2 ops); one VBAT gap of 4.85 mm; the copper plan meets 30 A
+  at 40 A/mm2 and 30 mV (18.0 mV, 38.1 A/mm2, 20 vias); the GND pour stays
+  one piece; DRC 0, nothing open, no shorts. About 2 s here.
+- `dev/live_validate_tools.py` ran here with `--no-live --no-ask` on HiFive:
+  every offline step passes (read 0.1-1.8 s per tool; 16 writer step files;
+  three pour stores; blank; live scripts; audit body; and, as HiFive is fully
+  routed, three small signal nets ripped up and re-routed by Freerouting with
+  0 open and 0 new DRC). Its live steps were exercised against a fake Altium
+  in `test_offline_accept.py` (the fake applies the live plan on "save", and
+  the script must read the edit back from the saved file); against the real
+  one they are UNVERIFIED (item 23).
+
 ## UNVERIFIED (needs Altium)
 
 Run these on the Altium PC, in order. Each says what passing looks like.
+`dev/live_validate_tools.py` (item 23) runs most of them in one command on a
+copy of a board; start with it, and use the items below for detail when a
+step fails.
 
 1. **Sandbox still compiles after the template change.** Restart the MCP
    server, then call `run_altium_script` with
@@ -628,6 +668,27 @@ Run these on the Altium PC, in order. Each says what passing looks like.
     Pass: no missing layer that the set really has, drill sizes and counts
     agree, every hit matched. Send the printed report if not.
 
+23. **The acceptance script.** Install the offline requirements into the
+    server's Python once (`server\.venv\Scripts\python.exe -m pip install -r server\offline\requirements.txt`),
+    close nothing, then run
+    `server\.venv\Scripts\python.exe dev\live_validate_tools.py C:\boards\<board>.PcbDoc --project <its .PrjPcb> --gerbers <Altium's output folder>`
+    from the repo folder, in a console (it asks y/n questions). Pass: the
+    summary has no FAIL; `env` says `main.py registers 26`; `preflight`,
+    `sandbox`, `audit`, `drc-agree` and `live-edit` PASS; `original-untouched`
+    PASS. `not-running` needs Altium closed: run `--only not-running` once
+    with Altium closed. With `--wedge` it also runs item 4 (do this last; it
+    stops the script engine on purpose and recovers it). On failure: send the
+    summary and the failing step's line (read it first: it can name nets);
+    the run folder (`C:\scratch\offline_check\run_*`) has the files and
+    `results.json`. If `env` fails, it prints the pip line to run.
+24. **The MCP client sees the offline tools.** Restart the MCP server from
+    the client. Pass: the client lists 26 `offline_pcb_*` tools; ask it to
+    call `offline_pcb_info` on a board file (answers `ok: true` with nets
+    and parts) and `offline_pcb_render` (the picture shows in the chat).
+    Fail: if only `offline_pcb_unavailable` is listed, call it and send the
+    error (and `server\altium_mcp.log`); if the tools answer an ImportError,
+    install the requirements as in item 23.
+
 ## Decisions made without asking
 
 - Work from `origin/main` + eager-ptolemy because phase-6 is missing (as the
@@ -676,3 +737,18 @@ Run these on the Altium PC, in order. Each says what passing looks like.
   rather than rewrite structures it cannot test; `models3d` trusts the
   body's projected outline over STEP points for coverage; the process probe
   never saves and refuses N: paths.
+- MCP tools: `start_server.py`'s requirement list is unchanged, because
+  changing it deletes and rebuilds `server\.venv` on the next start (a long
+  download inside the client's start-up timeout). The offline requirements
+  are installed into that venv once by hand (item 23); until then each
+  offline tool answers with the install line. Every tool answers JSON with
+  `ok` (results that had their own `ok`, such as fab-check, call it
+  `passed`). Copper and autoroute plans go to a file (`plan_out`), not into
+  the answer, because they can be large. An existing design file is replaced
+  only with `overwrite=true`. One `offline_pcb_unavailable` stub replaces
+  the set if `offline_tools` cannot load, so the server still starts.
+- The acceptance script works in a new `run_<time>` folder per run, asks the
+  person to open files rather than opening them from a script (a dialog
+  during a scripted open would wedge the engine), rips up three small
+  signal nets when the board has nothing open to autoroute, and runs the
+  wedge test only with `--wedge`.
