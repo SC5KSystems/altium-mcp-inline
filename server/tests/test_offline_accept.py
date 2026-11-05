@@ -43,6 +43,7 @@ class FakeAltium:
         self.SANDBOX_PAS.write_text("// sandbox\n")
         self.state = state
         self.wedged = False
+        self.board_open = True        # what the open-board probe answers
         self.altium_guard = SimpleNamespace(
             altium_state=lambda: {"state": self.state, "pids": [1] if self.state != "not_running"
                                   else []})
@@ -72,6 +73,9 @@ class FakeAltium:
                                "last_step_reached": "before", "executor_wedged": True})
         if "SandboxLog('hello')" in script:
             return self._ok({"ok": True})
+        if "client=0" in script:       # the open-board probe
+            flag = "1" if self.board_open else "0"
+            return self._ok({"probe": f"client={flag},board={flag}"})
         if "GroupIterator_Create" in script:
             return self._ok({"checked": 42, "stale_members": 0, "unregistered": 0, "fixed": 0,
                              "findings": []})
@@ -98,7 +102,7 @@ class FakeAltium:
     async def get_drc_violations(self, ctx, rule_names=None, max_violations=200):
         from offline.drc import DRC
         from offline.pcbdoc import PcbDoc
-        board = next(self.EXCHANGE_DIR.parent.glob("work/run_*/board_copy.PcbDoc"))
+        board = next(self.EXCHANGE_DIR.parent.glob("work/run_*/board_copy_*.PcbDoc"))
         d = DRC(PcbDoc.open(board), copper="saved")
         d.run()
         vs = [{"rule": v.rule, "x": None if v.x is None else v.x / MIL,
@@ -124,6 +128,8 @@ class Acceptance(unittest.TestCase):
         autoroute.find_freerouting = self._jar
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    elsewhere = None
+
     def run_script(self, live, *extra, answers="y"):
         import live_validate_tools as V
         said = []
@@ -132,8 +138,10 @@ class Acceptance(unittest.TestCase):
             # the person: does what the last instruction says, then answers
             last = next((s for s in reversed(said) if "[!]" in s or "[?]" in s), "")
             if "Save As" in last:
-                run = next(self.work.glob("run_*"))
-                shutil.copy(run / "pour.PcbDoc", run / "after_repour.PcbDoc")
+                run = sorted(self.work.glob("run_*"))[-1]
+                stamp = run.name[len("run_"):]
+                target = (self.elsewhere or run) / f"after_repour_{stamp}.PcbDoc"
+                shutil.copy(run / f"pour_{stamp}.PcbDoc", target)
             if "press Enter" in prompt:
                 return ""
             return answers
@@ -179,6 +187,22 @@ class Acceptance(unittest.TestCase):
         rc, res, _ = self.run_script(live, "--only", "live-edit")
         self.assertEqual(res["live-edit"]["status"], "FAIL")
         self.assertIn("net renamed False", res["live-edit"]["detail"])
+
+    def test_saved_in_the_wrong_folder_is_named(self):
+        live = FakeAltium(self.tmp)
+        self.elsewhere = self.work / "run_19990101_000000"     # an earlier run's folder
+        self.elsewhere.mkdir(parents=True)
+        rc, res, said = self.run_script(live, "--only", "repour-compare")
+        self.assertEqual(res["repour-compare"]["status"], "FAIL")
+        self.assertIn("an earlier run's folder", res["repour-compare"]["detail"])
+        self.assertTrue(any("not yet" in s for s in said), "it asks again before failing")
+
+    def test_board_not_open_is_diagnosed(self):
+        live = FakeAltium(self.tmp)
+        live.board_open = False
+        rc, res, _ = self.run_script(live, "--only", "audit")
+        self.assertEqual(res["audit"]["status"], "FAIL")
+        self.assertIn("does not have", res["audit"]["detail"])
 
     def test_not_running_and_wedge(self):
         live = FakeAltium(self.tmp, state="not_running")

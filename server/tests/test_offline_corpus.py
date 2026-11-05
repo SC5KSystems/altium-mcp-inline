@@ -139,3 +139,26 @@ class Scopes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FabFolders(unittest.TestCase):
+    def test_outputs_in_subfolders_are_found(self):
+        from offline.gerber import check
+        from offline.synth import Synth
+        s = Synth(20, 20)
+        s.net("GND")
+        doc = s.build()
+        gerber = ("%FSLAX46Y46*%\n%MOMM*%\n%TF.FileFunction,Copper,L1,Top*%\n"
+                  "%ADD10C,0.100000*%\nD10*\nX1000000Y1000000D03*\nM02*\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            sub = Path(tmp) / "Gerber"
+            sub.mkdir()
+            (sub / "board.GTL").write_text(gerber)
+            (Path(tmp) / "outputs.zip").write_bytes(b"PK")
+            rep = check(doc, tmp)
+            self.assertEqual([g["file"] for g in rep["gerbers"]], [str(Path("Gerber") / "board.GTL")])
+            self.assertTrue(any("zip" in n for n in rep["notes"]))
+            empty = Path(tmp) / "empty"
+            empty.mkdir()
+            rep = check(doc, empty)
+            self.assertTrue(any("no Gerber or drill file" in p for p in rep["problems"]))

@@ -47,7 +47,8 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 | WP9 small tools: review-power, notches, stack, blank, assembly, fab-check, models3d, membership-audit, probe_processes | done offline; the live script, the probe and Altium opening a blank board UNVERIFIED | `902da45` |
 | WP10 MCP tools (`offline_pcb_*`), worked example, JSON netlist, `dev/live_validate_tools.py` | done; tools registered and called through FastMCP 1.5.0 here; the MCP server on Windows and the acceptance script against a real Altium UNVERIFIED | `a98d8d7` |
 | Harder fixtures: AltiumSharp boards, panels, libraries, schematics in the cache; fixes they found | done | `3c8926f` |
-| Speed on a large board; better pour match (IsPolygon scope, pour arc tolerance) | done offline | see git log ("speed") |
+| Speed on a large board; better pour match (IsPolygon scope, pour arc tolerance) | done offline | `57bf058` |
+| First acceptance run on the real board: fixes to the acceptance script, fab-check and the writer check list | done; rerun pending | see git log ("acceptance") |
 | Phase-6 branch ported (holes, fasteners, edges, rule scopes, pad ties, neck, schematic tools, footprint check, calculators, two `pcb_utils.pas` fixes, validation harness) | done offline; ported, not merged (see notes); the harness on this reader and the deployed `.pas` fixes UNVERIFIED | `1867199` |
 
 ## How to run
@@ -637,6 +638,34 @@ Freerouting itself (WP8 notes).
 - `pour --compare` prints both areas without the net's own pads and tracks
   (what IoU is computed on); the plain area still includes copper poured
   over them.
+
+## First acceptance run (2026-11-05, the real board)
+
+Run on a copy of the real board with its project and Altium's outputs.
+Passed: requirements and registration (43 tools), reading and timing (every
+tool under 1.5 s), all offline outputs, the preflight refusal, a sandbox
+body, and Altium opening every writer step file, the poured, solid and blank
+boards with no dialog. The original board was untouched.
+
+What failed and what was done:
+- repour-compare, audit, live-edit (and probably drc-agree): the person
+  opened and saved files from an earlier run's folder (same names, offered
+  by Altium's recent files). Files the person opens or saves now carry the
+  run's stamp; after Enter the script checks and asks again, names an
+  earlier run's folder when the file landed there, and probes Altium
+  (read-only) for whether the copy is open, telling "not open" apart from
+  "open but GetPCBBoardByPath does not find it".
+- fab-check found nothing: it looked only at the top of the outputs folder.
+  It now searches subfolders, notes zips and several output sets, and says
+  when it finds no Gerber or drill file at all.
+- The writer check list flipped a part that was already on the bottom and
+  placed a small text near a corner with absolute coordinates. Flip now
+  takes a top-side part; the text is 2.5 mm high and every position is
+  given from the board origin (as Altium's status bar shows it) in mm and mil.
+- ECO preview showed differences (footprints, a split, pin moves, a new
+  net): whether the project was in sync is to be confirmed (Update PCB
+  in Altium shows the truth).
+- Autoroute skipped: no Freerouting jar on that PC (optional).
 
 ## UNVERIFIED (needs Altium)
 

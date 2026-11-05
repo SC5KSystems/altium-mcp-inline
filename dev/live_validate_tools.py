@@ -73,7 +73,10 @@ class Run:
         self.board = Path(args.board)
         stamp = time.strftime("run_%Y%m%d_%H%M%S")
         self.dir = Path(args.work).resolve() / stamp
-        self.copy = self.dir / "board_copy.PcbDoc"
+        # every file the person opens or saves carries the run's stamp, so Altium's
+        # recent-files list cannot hand them an earlier run's copy
+        self.stamp = stamp[len("run_"):]
+        self.copy = self.dir / self.name("board_copy")
         self.live, self.live_error = live, live_error
         self.ask_fn = ask
         self.say = say
@@ -117,13 +120,65 @@ class Run:
         self.record(step, FAIL, note or "reported failed")
         return FAIL
 
-    def wait(self, what):
-        """Ask the person to do something first; False when they skip or cannot."""
+    def name(self, base):
+        return f"{base}_{self.stamp}.PcbDoc"
+
+    def wait(self, what, check=None, tries=3, why=None):
+        """Ask the person to do something first. With `check`, re-ask (up to
+        `tries` times) until check() is true. False when they skip, cannot,
+        or it never comes true."""
         if self.ask_fn is None:
             return False
         self.say(f"\n  [!] {what}")
-        return self.ask_fn("      press Enter when done, or s then Enter to skip: ").strip() \
-            .lower() != "s"
+        for n in range(tries):
+            a = self.ask_fn("      press Enter when done, or s then Enter to skip: ")
+            if a.strip().lower() == "s":
+                return False
+            if check is None or check():
+                return True
+            self.say(f"      not yet: {why() if why else 'the check did not pass'}"
+                     + ("; try again" if n + 1 < tries else ""))
+        return False
+
+    def elsewhere(self, filename):
+        """The same base name saved into another run folder (Altium's Save As
+        dialog opens in the folder of the last file opened)."""
+        base = filename.rsplit("_", 1)[0] if "_" in filename else filename
+        hits = [p for p in self.dir.parent.glob(f"run_*/{base}*.PcbDoc")
+                if p.parent != self.dir]
+        hits.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return hits[0] if hits else None
+
+    def missing_file(self, path):
+        def why():
+            other = self.elsewhere(path.name)
+            return (f"{path} is not there" + (f"; a file of that kind was saved in {other.parent} "
+                                              "(an earlier run's folder)" if other else ""))
+        return why
+
+    def board_probe(self, path):
+        """What Altium sees of a board path: {"client": bool, "board": bool},
+        or None when the probe could not run. Read-only."""
+        from offline.live import q
+        body = (f"S1 := {q(str(path))};\n"
+                "S2 := 'client=0';\n"
+                "Obj2 := Client.GetDocumentByPath(S1);\n"
+                "if Obj2 <> nil then S2 := 'client=1';\n"
+                "S3 := 'board=0';\n"
+                "if PCBServer <> nil then\n"
+                "begin\n"
+                "    Obj1 := PCBServer.GetPCBBoardByPath(S1);\n"
+                "    if Obj1 <> nil then S3 := 'board=1';\n"
+                "end;\n"
+                "ResultText := '{\"probe\": \"' + S2 + ',' + S3 + '\"}';")
+        r = self.script("probe", body, timeout=60)
+        try:
+            got = json.loads(r.get("result") or "{}").get("probe", "")
+        except ValueError:
+            return None
+        if not r.get("success") or not got:
+            return None
+        return {"client": "client=1" in got, "board": "board=1" in got}
 
     def call_live(self, name, *a, **kw):
         if self.loop is None:
@@ -156,11 +211,30 @@ class Run:
             return False
         if self.copy_open:
             return True
-        if self.wait(f"In Altium: File > Open {self.copy} (on its own, not in a project) "
-                     "and leave it open."):
+        seen = {}
+
+        def is_open():
+            seen["probe"] = self.board_probe(self.copy)
+            return bool(seen["probe"] and seen["probe"]["board"])
+
+        def why():
+            pr = seen.get("probe")
+            if pr is None:
+                return "the probe script did not run (see the sandbox log)"
+            if pr["client"]:
+                return ("Altium has the document open but PCBServer.GetPCBBoardByPath does not "
+                        "find it: click into the board once so the PCB editor loads it")
+            return (f"Altium does not have {self.copy} open; close any earlier board_copy and "
+                    "open this exact path (paste it into File > Open)")
+        if self.wait(f"In Altium: close every other PCB document, then File > Open {self.copy} "
+                     "(paste the full path; on its own, not in a project) and leave it open.",
+                     check=is_open, why=why):
             self.copy_open = True
             return True
-        self.record(step, SKIP, f"needs {self.copy.name} open in Altium")
+        pr = seen.get("probe")
+        self.record(step, FAIL if pr is not None else SKIP,
+                    f"{self.copy.name} not found open in Altium: {why()}"
+                    if pr is not None else f"needs {self.copy.name} open in Altium")
         return False
 
     def script(self, step, body, timeout=120):
@@ -270,7 +344,7 @@ class Run:
             self.record("outputs:writer", FAIL, f"{type(e).__name__}: {e}")
         # pours stored three ways
         for store in ("pour", "solid", "unpoured"):
-            out = d / f"{store}.PcbDoc"
+            out = d / self.name(store)
             r = self.tool("offline_pcb_repour", board=c, out=str(out), store=store)
             if r["ok"]:
                 self.files[store] = out
@@ -281,7 +355,7 @@ class Run:
         box = (self.info.get("outline") or {}).get("box")
         if box:
             x0, y0, x1, y1 = box
-            out = d / "blank.PcbDoc"
+            out = d / self.name("blank")
             r = self.tool("offline_pcb_blank_board", template=c, out=str(out),
                           width=round(min(x1 - x0, 100.0), 3), height=round(min(y1 - y0, 80.0), 3),
                           at=[x0, y0], holes=[[x0 + 4, y0 + 4, 3.2]])
@@ -346,9 +420,9 @@ class Run:
                               plan_out=str(d / "copper_plan.json"), png=str(d / "copper.png"))
                 if r["ok"]:
                     r2 = self.tool("offline_pcb_apply_plan", board=c, plan=r["plan"],
-                                   out=str(d / "planned.PcbDoc"))
+                                   out=str(d / self.name("planned")))
                     if r2["ok"]:
-                        self.files["planned"] = d / "planned.PcbDoc"
+                        self.files["planned"] = d / self.name("planned")
                     self.record("outputs:copper", PASS if r2["ok"] else FAIL,
                                 f"targets {'met' if r['met'] else 'NOT met'}, {r['ops']} op(s)"
                                 if r2["ok"] else r2["error"])
@@ -409,11 +483,11 @@ class Run:
             plan = {"version": 1, "ops": [{"op": "remove", "kinds": ["track", "arc", "via"],
                                            "net": n, "free": True} for n in nets]}
             r = self.tool("offline_pcb_apply_plan", board=base, plan=plan,
-                          out=str(d / "ripped.PcbDoc"))
+                          out=str(d / self.name("ripped")))
             if not r["ok"]:
                 self.record("outputs:autoroute", FAIL, f"ripping up {nets}: {r['error']}")
                 return
-            base = str(d / "ripped.PcbDoc")
+            base = str(d / self.name("ripped"))
             ripped = f" (wiring removed first: {base})"
         r = self.tool("offline_pcb_autoroute", board=base, plan_out=str(d / "route.json"),
                       nets=nets, check=True, timeout=600, workdir=str(d / "freerouting"))
@@ -421,9 +495,9 @@ class Run:
             self.record("outputs:autoroute", FAIL, r["error"])
             return
         r2 = self.tool("offline_pcb_apply_plan", board=base, plan=r["plan"],
-                       out=str(d / "routed.PcbDoc"))
+                       out=str(d / self.name("routed")))
         if r2["ok"]:
-            self.files["routed"] = d / "routed.PcbDoc"
+            self.files["routed"] = d / self.name("routed")
         drc = r.get("drc") or {}
         self.record("outputs:autoroute", PASS if r2["ok"] else FAIL,
                     f"{len(nets)} net(s){ripped}, {r['connections_after']} open after, "
@@ -519,9 +593,10 @@ class Run:
         if "unpoured" not in self.files:
             self.record("repour-compare", SKIP, "no unpoured file was written")
             return
-        after = self.dir / "after_repour.PcbDoc"
-        what = (f"File > Open {self.files['unpoured']}, Tools > Polygon Pours > Repour All, "
-                f"then File > Save As {after}.")
+        after = self.dir / self.name("after_repour")
+        what = (f"File > Open {self.files['unpoured']} (paste the full path), Tools > Polygon "
+                f"Pours > Repour All, then File > Save As {after} (paste the full path: the "
+                "dialog may open in another folder).")
         if self.ask_fn is None:
             self.record("repour-compare", MANUAL, what + " Then from server/: python -m offline "
                         f"pour {after} --mode saved --compare (pass: area-weighted IoU >= 0.98, "
@@ -529,11 +604,11 @@ class Run:
             return
         if not self.need_running("repour-compare"):
             return
-        if not self.wait(what):
-            self.record("repour-compare", SKIP, "skipped by you")
-            return
-        if not after.exists():
-            self.record("repour-compare", FAIL, f"{after} was not saved")
+        if not self.wait(what, check=after.exists, why=self.missing_file(after)):
+            if after.exists():
+                self.record("repour-compare", SKIP, "skipped by you")
+            else:
+                self.record("repour-compare", FAIL, self.missing_file(after)())
             return
         r = self.tool("offline_pcb_repour", board=str(after), mode="saved", compare=True)
         if not r["ok"]:
@@ -585,8 +660,9 @@ class Run:
     def step_drc_agree(self):
         if not self.need_copy_open("drc-agree"):
             return
-        if not self.wait(f"With {self.copy.name} open in Altium: Tools > Design Rule Check > Run "
-                         "Design Rule Check, then close the report."):
+        if not self.wait(f"Close every other PCB document, then with {self.copy.name} in front: "
+                         "Tools > Design Rule Check > Run Design Rule Check, then close the "
+                         "report (get_drc_violations reads the board in front)."):
             self.record("drc-agree", SKIP, "Altium's DRC was not run")
             return
         import compare_drc as C
@@ -613,6 +689,9 @@ class Run:
         detail = (f"agreement {agree:.1%}: {len(pairs)} matched, {len(ours) - len(pairs)} offline "
                   f"only, {len(theirs) - len(pairs)} Altium only (table: "
                   f"{self.dir / 'drc_compare.txt'})")
+        if ours and theirs and not pairs:
+            detail += ("; nothing matched at all: Altium's markers may be from another board "
+                       "(the one in front when get_drc_violations ran), or from before a save")
         if truncated:
             self.record("drc-agree", FAIL, "Altium's list was truncated; " + detail)
         else:

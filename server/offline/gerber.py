@@ -398,10 +398,17 @@ FLIPS = {(1, 1): "as is", (1, -1): "mirrored top to bottom", (-1, 1): "mirrored 
 
 def check(doc, folder, tol=0.02):
     folder = Path(folder)
-    files = sorted(p for p in folder.iterdir() if p.is_file())
-    gerbers, drills, skipped = [], [], []
+    if not folder.is_dir():
+        raise ValueError(f"{folder} is not a folder")
+    # Altium's output jobs often put Gerbers and drill files in subfolders
+    files = sorted(p for p in folder.rglob("*") if p.is_file())
+    gerbers, drills, skipped, zips = [], [], [], []
     for f in files:
         ext = f.suffix.lower()
+        name = str(f.relative_to(folder))
+        if ext == ".zip":
+            zips.append(name)
+            continue
         try:
             text = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -409,10 +416,10 @@ def check(doc, folder, tol=0.02):
         head = text[:4000]
         if ext in DRILL_EXT or re.search(r"^M48", head, re.M):
             if re.search(r"^M48", head, re.M) or re.search(r"^T\d+C", head, re.M):
-                drills.append(parse_drill(text, f.name))
+                drills.append(parse_drill(text, name))
                 continue
         if "%FS" in head or "%MO" in head or re.search(r"%ADD\d+", text[:20000]):
-            g = parse_gerber(text, f.name)
+            g = parse_gerber(text, name)
             if g["function"] is None and ext in EXT:
                 g["function"], g["side"] = EXT[ext]
             if g["function"] is None:
@@ -424,10 +431,16 @@ def check(doc, folder, tol=0.02):
                     g["function"], g["side"] = "mechanical", int(m.group(1))
             gerbers.append(g)
         else:
-            skipped.append(f.name)
+            skipped.append(name)
     rep = {"folder": str(folder), "gerbers": [], "drills": [], "skipped": skipped,
            "missing": [], "problems": [], "notes": []}
+    if zips:
+        rep["notes"].append(f"zip archives are not opened (unzip them first): {zips[:5]}")
+    if not gerbers and not drills:
+        rep["problems"].append(f"no Gerber or drill file found in {folder} or its subfolders "
+                               f"({len(files)} file(s) looked at)")
     have = set()
+    claims = {}
     copper_files = [g for g in gerbers if g["function"] == "copper"]
     order = doc.copper_layers
     for g in gerbers:
@@ -444,9 +457,11 @@ def check(doc, folder, tol=0.02):
             g["layer"] = L.name(lay) if lay else None
             if lay:
                 have.add(f"copper:{L.name(lay)}")
+                claims.setdefault(f"copper:{L.name(lay)}", []).append(g["file"])
         elif key in ("mask", "silk", "paste"):
             side = "top" if str(g["side"]).startswith("top") else "bottom"
             have.add(f"{key}:{side}")
+            claims.setdefault(f"{key}:{side}", []).append(g["file"])
         elif key in ("outline", "mechanical"):
             if key == "outline" or g["draws"] + g["arcs"] > 0:
                 have.add("outline" if key == "outline" else f"mech:{g['side']}")
@@ -456,6 +471,10 @@ def check(doc, folder, tol=0.02):
             rep["notes"].append(f"{g['file']}: zero-size apertures {g['zero_apertures']}")
         rep["gerbers"].append({k: v for k, v in g.items() if k not in ("apertures",
                                                                          "flash_by_aperture")})
+    for k, fs in sorted(claims.items()):
+        if len(fs) > 1:
+            rep["notes"].append(f"{len(fs)} files for {k} ({', '.join(fs[:3])}): more than one "
+                                "output set in the folder? Give the folder of one set")
     if "outline" not in have and any(k.startswith("mech:") for k in have):
         have.add("outline")
         rep["notes"].append("no outline file as such; a mechanical layer is taken as the outline")
