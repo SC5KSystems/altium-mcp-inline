@@ -354,8 +354,20 @@ place and swap) and `eco.py`.
   library footprint placed bottom-side and rotated, a copied footprint and a
   swapped one passes the integrity check and reads in KiCad with the
   expected footprint, pad and via counts.
-- Not supported (raises): hierarchical schematics (sheet symbols), binary
-  schematic records (a newer pin format). Not handled: multi-channel
+- Since the second acceptance run the ECO reads schematics with schnet
+  (`eco.schematic_netlist`), the reader checked net for net against
+  Altium's compiled netlist, plus the footprint links `fpcheck` reads;
+  `sch.py` gave a wrong GND split on a real project. Named one-pin nets are
+  kept (their pad carries the name on the board), unnamed ones dropped.
+  Graphical parts are skipped. Schematic errors (duplicate designators,
+  unannotated parts, two nets of one name) become preview warnings. schnet
+  no longer calls the units of a multi-unit part (U1A, U1B) duplicates; a
+  project that lists no sheets is refused.
+- Not supported: sheet symbols and ports (schnet reports them, does not
+  follow them) and binary schematic records (a newer pin format, kept but
+  not decoded; none in the fixtures): the preview warns and `plan`/`apply`
+  refuse. Buses are warned about only (their wires join by their own
+  labels). Not handled: multi-channel
   designs, net classes from the schematic, parameters other than Comment.
 
 ## WP7 notes (power copper)
@@ -678,15 +690,22 @@ back with both edits. Original untouched.
 
 Open:
 - DRC agreement 0 %: per rule, offline found Clearance and annular-ring
-  errors on 12 relay pins that Altium does not report (the pad shape the
-  reader builds does not contain the hole: `dev/pad_dump.py` prints those
-  pads; awaiting its output), and Altium found Board Outline Clearance on
-  six silkscreen tracks and Silk To Solder Mask on designator text, both of
-  which the offline DRC skipped. Since then: the outline check covers
-  silkscreen, and the acceptance comparison checks text (as boxes).
+  errors on 12 relay pins that Altium does not report, and Altium found
+  Board Outline Clearance on six silkscreen tracks and Silk To Solder Mask
+  on designator text, both of which the offline DRC skipped. Since then:
+  the outline check covers silkscreen, and the acceptance comparison checks
+  text (as boxes). The relay pins: `dev/pad_dump.py` showed slots whose
+  hole (2.2 mm) is longer than their slot size (0.9 mm); the reader built
+  the slot slot_size long, so it stuck out of the pad. Altium's hole runs
+  along the pad's y and slot size along its x, either may be longer (as
+  KiCad's importer reads them); `geom.hole_shape` now does so and the
+  relay hole sits inside its pad. Still open: 4 Component Clearance and 7
+  Silk To Solder Mask violations only offline (details not yet seen).
 - ECO preview: Altium's Update PCB proposes only the 4 footprint changes the
-  preview also found; the preview's split, pin moves and new net are wrong
-  (awaiting `eco preview` output to find why).
+  preview also found; the preview's GND split, 23 pin moves and new net
+  came from `sch.py`, whose netlist differs from Altium's on that project
+  (schnet's `sch-compare` matched the board, 223 pins, no differences).
+  The ECO now reads schematics with schnet (see WP6 notes); rerun needed.
 - fab-check: the outputs folder held no Gerber or drill files (2 other files).
 
 ## UNVERIFIED (needs Altium)

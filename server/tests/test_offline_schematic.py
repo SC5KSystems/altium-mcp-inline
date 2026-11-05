@@ -32,10 +32,10 @@ class Sheet:
     def _add(self, **kw):
         self.recs.append({k.upper().replace("_", "."): str(v) for k, v in kw.items()})
 
-    def part(self, des, pins, libref="X", comment="", part_id=1):
+    def part(self, des, pins, libref="X", comment="", part_id=1, units=1):
         """pins: (number, name, base_x, base_y, orientation[, owner_part])"""
         idx = len(self.recs)
-        self._add(record=1, libreference=libref, currentpartid=part_id, partcount=2)
+        self._add(record=1, libreference=libref, currentpartid=part_id, partcount=units + 1)
         self._add(record=34, ownerindex=idx, text=des, name="Designator")
         if comment:
             self._add(record=41, ownerindex=idx, name="Comment", text=comment)
@@ -160,6 +160,16 @@ class ConnectivityTests(unittest.TestCase):
         found = kinds(netlist(s))
         for k in ("empty_net_label", "floating_net_label", "unconnected_pin", "single_pin_net"):
             self.assertIn(k, found)
+
+
+    def test_units_of_one_part_are_not_duplicates(self):
+        s = Sheet().part("U1", [("1", "A", 0, 0, 0, 1)], units=2, part_id=1)
+        s.part("U1", [("2", "B", 0, 20, 0, 2)], units=2, part_id=2)
+        self.assertNotIn("duplicate_designator", kinds(netlist(s)))
+        s.part("U1", [("3", "C", 0, 40, 0, 2)], units=2, part_id=2)
+        self.assertIn("duplicate_designator", kinds(netlist(s)), "unit B twice")
+        r = Sheet().part("R1", [("1", "", 0, 0, 0)]).part("R1", [("1", "", 0, 20, 0)])
+        self.assertIn("duplicate_designator", kinds(netlist(r)))
 
 
 class CompareTests(unittest.TestCase):

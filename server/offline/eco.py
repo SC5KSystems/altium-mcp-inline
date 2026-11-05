@@ -22,12 +22,10 @@ SOURCEUNIQUEID: fiducials, holes placed in the PCB) are left alone.
 """
 
 import json
-import math
-import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from .sch import Netlist, Project, natural_key
+from .sch import Netlist, natural_key
 
 
 class EcoError(ValueError):
@@ -44,18 +42,94 @@ def load_netlist(source):
     if isinstance(source, dict):
         return Netlist.from_dict(source), None
     if isinstance(source, (list, tuple)):
-        prj = Project.from_sheets(source)
-        return prj.netlist(), prj
+        return schematic_netlist(source)
     p = Path(source)
-    if p.suffix.lower() == ".prjpcb":
-        prj = Project.open(p)
-        return prj.netlist(), prj
-    if p.suffix.lower() == ".schdoc":
-        prj = Project.from_sheets([p])
-        return prj.netlist(), prj
+    if p.suffix.lower() in (".prjpcb", ".schdoc"):
+        return schematic_netlist(p)
     if p.suffix.lower() == ".json":
         return Netlist.from_dict(json.loads(p.read_text(encoding="utf-8"))), None
     raise EcoError(f"{source}: give a .PrjPcb, .SchDoc or netlist .json")
+
+
+# what schnet reports but does not connect; sheet symbols and ports can join
+# nets across sheets, so a plan built without them could split real nets
+NOT_FOLLOWED = ("hierarchy_not_followed", "bus_not_followed")
+
+
+def schematic_netlist(path):
+    """(Netlist, project) from a .PrjPcb, a .SchDoc or a list of them, read with schnet (the
+    reader checked net for net against Altium's compiled netlist) and the
+    sheets' footprint links. A pin alone on an unnamed net is left out (its
+    pad carries no net on the board); a named one-pin net is kept, as Altium
+    does. Graphical parts never reach the board.
+    project has .pcb: the project's first board, or None."""
+    from . import schnet
+    from .schdoc import SchDoc
+    if isinstance(path, (list, tuple)):
+        paths = [Path(x) for x in path]
+        if not paths:
+            raise EcoError("no schematic sheets given")
+        bad = [str(x) for x in paths if x.suffix.lower() != ".schdoc"]
+        if bad:
+            raise EcoError(f"give .SchDoc sheets in a list, not {bad[:5]}")
+        missing = [str(x) for x in paths if not x.is_file()]
+        if missing:
+            raise EcoError(f"sheets not found: {missing[:5]}")
+        docs = [SchDoc.load(x) for x in paths]
+        nl2 = schnet.build_netlist(docs, schnet.resolve_scope(0, docs))
+        return _from_schnet(docs, nl2, None, paths[0])
+    p = Path(path)
+    if p.suffix.lower() == ".prjpcb":
+        proj = schnet.Project(p)
+        if not proj.sheet_paths:
+            raise EcoError(f"{p.name} lists no schematic sheets")
+        missing = [str(x) for x in proj.sheet_paths if not Path(x).is_file()]
+        if missing:
+            raise EcoError(f"{p.name} lists sheets that are not on disk: {missing[:5]}")
+        docs = proj.load_sheets()
+        scope = schnet.resolve_scope(proj.hierarchy_mode, docs)
+        nl2 = schnet.build_netlist(docs, scope, proj.power_names_first)
+        pcb = proj.pcb_paths[0] if proj.pcb_paths else None
+    else:
+        docs = [SchDoc.load(p)]
+        nl2 = schnet.build_netlist(docs, schnet.resolve_scope(0, docs))
+        pcb = None
+    return _from_schnet(docs, nl2, pcb, p)
+
+
+def _from_schnet(docs, nl2, pcb, p):
+    from types import SimpleNamespace
+    from .fpcheck import schematic_parts
+    lowest = {}
+    for d in docs:
+        for c in d.components.values():
+            cur = lowest.get(c.designator)
+            if c.designator and (cur is None or c.part_id < cur[0]):
+                lowest[c.designator] = (c.part_id, c.unique_id)
+    out = Netlist()
+    for des, sp in schematic_parts(docs).items():
+        if sp.kind == "graphical" or not des or des.endswith("?"):
+            continue
+        cur = [f for f in sp.footprints if f[1]] or sp.footprints[:1]
+        info = nl2.components.get(des, {})
+        uid = lowest.get(des, (0, sp.unique_ids[0] if sp.unique_ids else ""))[1]
+        out.parts[des] = {
+            "designator": des, "footprint": cur[0][0] if cur else "",
+            "footprints": [f[0] for f in sp.footprints], "comment": info.get("comment", ""),
+            "libref": sp.libref, "unique_id": uid, "unique_ids": list(sp.unique_ids),
+            "sheet": sp.sheet, "pins": sorted(sp.pins, key=natural_key), "units": [1]}
+    for n in nl2.nets:
+        pins = {(q.designator, q.pin) for q in n.pins if q.designator in out.parts}
+        if len(pins) >= 2 or (pins and not n.auto_named):
+            out.nets[n.name] = pins
+    out.warnings = [f"{f.kind}: {f.detail}" for f in nl2.findings
+                    if f.severity == "error" or f.kind in NOT_FOLLOWED]
+    for d in docs:
+        n = sum(1 for r in d.records if r.get("RECORD") == "binary")
+        if n:
+            out.warnings.append(f"binary_records: {d.name}: {n} record(s) in a binary "
+                                "format were not read (pins in them are missing)")
+    return out, SimpleNamespace(pcb=pcb, sheets=[d.name for d in docs], path=p)
 
 
 def board_view(doc):
@@ -217,6 +291,12 @@ def plan(netlist, doc, sources=(), remove_unlinked=False):
     """An EditPlan that brings the board in line with the schematic, plus a
     report of what it could not do."""
     from . import footprints as F
+    unfollowed = [w for w in netlist.warnings
+                  if w.startswith(("hierarchy_not_followed", "binary_records"))]
+    if unfollowed:
+        raise EcoError("the schematic has sheet symbols, ports or binary records the reader "
+                       "does not follow, so its nets may be wrong; no plan built. Use "
+                       "Altium's Update PCB. " + "; ".join(unfollowed[:3]))
     pv = preview(netlist, doc)
     ops, problems = [], []
     for r in pv["parts"]["remove"]:

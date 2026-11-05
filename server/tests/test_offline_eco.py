@@ -230,5 +230,45 @@ class Libraries(unittest.TestCase):
             gw.footprint("NOPE")
 
 
+class NotFollowed(unittest.TestCase):
+    """Sheet symbols and ports join nets the reader does not follow: the
+    preview says so, and no plan is built from such a netlist."""
+
+    def test_ports_are_warned_and_refuse_a_plan(self):
+        from types import SimpleNamespace
+        from offline.example import board
+        from offline.schnet import Finding
+        nl2 = SimpleNamespace(nets=[], components={}, findings=[
+            Finding("hierarchy_not_followed", "A.SchDoc", "0 sheet symbols, 0 sheet entries, "
+                    "2 ports: their connections are not followed"),
+            Finding("dangling_wire_end", "A.SchDoc", "wire end touches nothing")])
+        nl, prj = eco._from_schnet([], nl2, None, Path("A.SchDoc"))
+        self.assertEqual(len(nl.warnings), 1)
+        self.assertIn("2 ports", nl.warnings[0])
+        doc = board().build()
+        self.assertIn(nl.warnings[0], eco.preview(nl, doc)["warnings"])
+        with self.assertRaisesRegex(eco.EcoError, "sheet symbols, ports"):
+            eco.plan(nl, doc)
+
+    def test_project_without_sheets_refuses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "empty.PrjPcb"
+            p.write_text("[Design]\nVersion=1.0\n", encoding="utf-8")
+            with self.assertRaisesRegex(eco.EcoError, "lists no schematic sheets"):
+                eco.load_netlist(p)
+
+    def test_binary_records_refuse_a_plan(self):
+        from types import SimpleNamespace
+        from offline.example import board
+        from offline.schdoc import SchDoc
+        sheet = SchDoc("B.SchDoc", [{"HEADER": "Protel for Windows"}, {"RECORD": "binary"}])
+        nl2 = SimpleNamespace(nets=[], components={}, findings=[])
+        nl, _ = eco._from_schnet([sheet], nl2, None, Path("B.SchDoc"))
+        self.assertEqual(nl.warnings, ["binary_records: B.SchDoc: 1 record(s) in a binary "
+                                       "format were not read (pins in them are missing)"])
+        with self.assertRaisesRegex(eco.EcoError, "binary"):
+            eco.plan(nl, board().build())
+
+
 if __name__ == "__main__":
     unittest.main()

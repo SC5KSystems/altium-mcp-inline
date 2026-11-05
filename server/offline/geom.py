@@ -114,9 +114,16 @@ def hole_shape(obj, extra=0.0):
     d = obj.hole + 2 * extra
     if d <= 0:
         return sh.Polygon()
-    if obj.KIND == "pad" and obj.hole_shape == "slot" and obj.slot_size > obj.hole:
-        L_ = obj.slot_size + 2 * extra
-        g = stadium(obj.x - (L_ - d) / 2, obj.y, obj.x + (L_ - d) / 2, obj.y, d)
+    if obj.KIND == "pad" and obj.hole_shape == "slot" and obj.slot_size > 0:
+        # an oval slot_size wide along the pad's x and hole long along its y (in
+        # the pad's frame, turned by the slot rotation): either may be the longer
+        sx, sy = obj.slot_size + 2 * extra, d
+        if abs(sx - sy) < 1e-9:
+            return sh.Point(obj.x, obj.y).buffer(sx / 2, quad_segs=16)
+        if sx > sy:
+            g = stadium(obj.x - (sx - sy) / 2, obj.y, obj.x + (sx - sy) / 2, obj.y, sy)
+        else:
+            g = stadium(obj.x, obj.y - (sy - sx) / 2, obj.x, obj.y + (sy - sx) / 2, sx)
         return _rotate(g, obj.rotation + obj.slot_rotation, obj.x, obj.y)
     if obj.KIND == "pad" and obj.hole_shape == "square":
         g = sh.box(obj.x - d / 2, obj.y - d / 2, obj.x + d / 2, obj.y + d / 2)

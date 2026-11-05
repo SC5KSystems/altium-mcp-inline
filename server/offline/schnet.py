@@ -314,9 +314,12 @@ def build_netlist(docs, scope="global", power_names_first=False, t_connects=Fals
         groups[dsu.find(("c", si, ci))].append((si, c))
 
     components = {}
+    units = defaultdict(set)              # designator -> part ids seen (U1A, U1B share U1)
     for doc in docs:
         for comp in doc.components.values():
-            if comp.designator in components:
+            again = comp.part_count <= 1 or comp.part_id in units[comp.designator]
+            units[comp.designator].add(comp.part_id)
+            if comp.designator in components and again:
                 findings.append(Finding("duplicate_designator", doc.name,
                                         "%s also on %s" % (comp.designator, components[comp.designator]["sheet"])))
             if "?" in comp.designator or not comp.designator:

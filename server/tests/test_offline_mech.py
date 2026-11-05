@@ -248,3 +248,35 @@ class Calculators(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(HAVE, "shapely not installed")
+class SlotHoles(unittest.TestCase):
+    """Altium keeps a slot as hole (along the pad's y) and slot size (along its
+    x); either may be the longer one."""
+
+    @staticmethod
+    def pad(hole, slot, rotation, slot_rotation=0.0):
+        from types import SimpleNamespace
+        return SimpleNamespace(KIND="pad", x=10.0, y=20.0, hole=hole, slot_size=slot,
+                               hole_shape="slot", rotation=rotation,
+                               slot_rotation=slot_rotation, hole_rotation=0.0)
+
+    def span(self, g):
+        x0, y0, x1, y1 = g.bounds
+        return round(x1 - x0, 3), round(y1 - y0, 3)
+
+    def test_hole_longer_than_slot(self):
+        """A relay pin: 1.5 x 2.8 pad turned 90 degrees, hole 2.2, slot 0.9."""
+        from offline import geom
+        h = geom.hole_shape(self.pad(2.2, 0.9, 90))
+        self.assertEqual(self.span(h), (2.2, 0.9))
+        from shapely.geometry import box
+        copper = box(10 - 1.4, 20 - 0.75, 10 + 1.4, 20 + 0.75)
+        self.assertTrue(copper.contains(h))
+
+    def test_slot_longer_than_hole(self):
+        from offline import geom
+        self.assertEqual(self.span(geom.hole_shape(self.pad(0.8, 2.0, 0))), (2.0, 0.8))
+        self.assertEqual(self.span(geom.hole_shape(self.pad(0.8, 2.0, 0, 90))), (0.8, 2.0))
+        self.assertEqual(self.span(geom.hole_shape(self.pad(1.0, 1.0, 45))), (1.0, 1.0))
