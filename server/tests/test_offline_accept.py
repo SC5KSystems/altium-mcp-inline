@@ -160,7 +160,8 @@ class Acceptance(unittest.TestCase):
         self.assertEqual(rc, 0, [r for r in res.values() if r["status"] == "FAIL"])
         self.assertIn("IoU 1.0000", res["repour-compare"]["detail"])
         self.assertIn("agreement 100.0%", res["drc-agree"]["detail"])
-        self.assertIn("main.py registers 26", res["env"]["detail"])
+        import offline_tools
+        self.assertIn(f"main.py registers {len(offline_tools.TOOLS)}", res["env"]["detail"])
         preflight = [b for b in live.bodies if "Result := 'x'" in b]
         self.assertEqual(len(preflight), 1)
 

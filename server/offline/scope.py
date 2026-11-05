@@ -512,3 +512,27 @@ class Scope:
 
 def compile_scope(text):
     return Scope(text)
+
+
+def predicates(text):
+    """[(function, literal argument)] for every one-argument call in a scope,
+    e.g. [("InNetClass", "Power")]. Raises ScopeError when it cannot parse."""
+    out = []
+
+    def walk(node):
+        t = node[0]
+        if t == "call":
+            if len(node[2]) == 1 and node[2][0][0] == "lit":
+                out.append((node[1], str(node[2][0][1])))
+            for a in node[2]:
+                walk(a)
+        elif t in ("and", "or", "xor"):
+            walk(node[1])
+            walk(node[2])
+        elif t == "not":
+            walk(node[1])
+        elif t == "cmp":
+            walk(node[2])
+            walk(node[3])
+    walk(_Parser(text or "All").parse())
+    return out

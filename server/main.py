@@ -1166,7 +1166,8 @@ async def run_altium_script(ctx: Context, script: str, timeout_seconds: int = 12
     - Assign findings to the string variable ResultText - it is returned.
     - DelphiScript has NO inline variable declarations. Reuse the provided
       scratch variables: S1..S3 (String), I1..I3 and B1 (Integer),
-      Obj1..Obj5 (IDispatch), List1 (TStringList), IntMan, DbDoc.
+      Obj1..Obj5 (IDispatch), List1 (TStringList: declared, not created -
+      call TStringList.Create first and Free it at the end), IntMan, DbDoc.
     - try/except does NOT catch runtime errors such as bad conversions or
       invalid API calls, so it cannot be relied on to keep a script alive.
     - The sandbox is standalone: helpers and constants from the production
@@ -3105,7 +3106,8 @@ async def get_polygon_data(ctx: Context, net_names: list = None) -> str:
     actually ends up in them.
 
     Each polygon reports its layer, outline vertices, bounding box and outline
-    area, plus pour_over, remove_dead_copper, remove_narrow_necks and the neck
+    area, plus pour_over_style (1 or 2, as in the saved file's POUROVERSTYLE),
+    remove_dead_copper, remove_narrow_necks and the neck
     threshold. Note that outline_area_sq_mils measures the polygon boundary and
     does not subtract cutouts or account for arced edges, so treat it as an
     upper bound on copper.

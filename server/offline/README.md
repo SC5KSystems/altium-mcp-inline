@@ -27,6 +27,18 @@ Read, check, edit and write Altium `.PcbDoc` files without Altium. Run from the
     python -m offline models3d board.PcbDoc                   # embedded STEP sanity
     python -m offline membership-audit --board-path "C:\b\x.PcbDoc" -o audit.pas  # live script
     python -m offline example -o folder                       # the worked example below
+    python -m offline holes board.PcbDoc --mounting           # holes and edge distances
+    python -m offline fasteners board.PcbDoc --screw M3-pan   # screw heads vs edge and copper
+    python -m offline edges board.PcbDoc                      # parts and silkscreen at the edge
+    python -m offline rule-scopes board.PcbDoc                # rules naming missing classes
+    python -m offline pad-ties board.PcbDoc --nets GND        # how pads really join their pours
+    python -m offline neck board.PcbDoc --net VBAT --src J1 --dst Q1.D
+    python -m offline sch-check project.PrjPcb                # schematic problems
+    python -m offline sch-compare old.PrjPcb new.PrjPcb       # what a schematic edit changed
+    python -m offline sch-footprints project.PrjPcb           # before Update PCB
+    python -m offline sch-netlist|sch-part|sch-bom|sch-rules project.PrjPcb ...
+    python -m offline ripple --r 1 --l 0.0005 --f 2000        # R-L load current under PWM
+    python -m offline profet --amps 8 --pwm 200               # PROFET+2 channel, datasheet values
 
 All lengths are millimetres. Coordinates are absolute (database) coordinates,
 Y up, as the file stores them; `PcbDoc.origin` gives the user origin.
@@ -69,6 +81,12 @@ scipy, Pillow; olefile for tests).
 | `models3d.py` | embedded STEP models against their footprints |
 | `audit.py` | live script: primitives whose Net disagrees with their net's member group |
 | `example.py` | the worked example: a synthetic board through ECO, copper, pour, DRC, render |
+| `mech.py` | holes and edge distances, screw heads against edge and copper, parts and silkscreen at the edge |
+| `padties.py` | how each pad joins its pour, measured from the poured copper, against the rule |
+| `neck.py` | narrowest copper on the widest route between two pad groups |
+| `schdoc.py`, `schnet.py`, `schtools.py` | schematic records, netlist with Altium's connectivity rules (checked live against Altium's compiled netlist), compare, BOM, part view, block rules |
+| `fpcheck.py` | footprints and pins before Update PCB; the update previewed by unique ID |
+| `calc.py` | PROFET+2 (datasheet values), MOSFET stage, freewheel diode, R-L PWM ripple, copper area for watts |
 | `synth.py` | small synthetic boards for tests |
 | `fixtures.py` | where tests find real boards |
 
@@ -231,6 +249,24 @@ seen in its log is a version check). `--allow-network` lifts the block. Its auto
   repairs the groups. `dev/probe_processes.py` tries candidate processes for
   a dialog-free DRC or Update PCB, one per run.
 
+## Ported from the phase-6 branch
+
+The phase-6 branch (98b87ff) had its own, simpler reader. Its tools were
+moved onto this reader rather than kept beside it: `mech.py`, `padties.py`,
+`neck.py`, `fpcheck.py` and the scope check in `rules.py` are rewrites on
+shapely and this reader; the schematic modules and `calc.py` came across
+as they were. Two schematic readers now live here: `sch.py` (used by the
+ECO) and `schdoc`/`schnet` (the `sch-*` tools, checked live against
+Altium's compiled netlist). Choosing one is left for later.
+
+- `pad-ties` samples a ring half the rule's air gap outside each pad and
+  classes the join as direct, direct_partial (merged, with part of the edge
+  cleared round another net), relief (spoke count and widths) or none.
+- `neck` reports widths to about one raster step (0.1 mm by default).
+- `sch-footprints` checks a library footprint against the board's copy when
+  the project's own PcbLibs lack it (a warning), and lists libraries it
+  cannot read instead of skipping them.
+
 ## MCP tools
 
 `server/offline_tools.py` makes these tools available to the MCP client
@@ -266,6 +302,15 @@ docstring says when to use the tool.
 | `offline_pcb_blank_board` | start a new board from a template |
 | `offline_pcb_assembly_page` | write a hand-assembly page |
 | `offline_pcb_membership_audit_script` | a live script for stale net membership |
+| `offline_pcb_holes`, `offline_pcb_fasteners`, `offline_pcb_edges` | holes, screw heads, parts and silkscreen at the edge |
+| `offline_pcb_rules_check` | rule scopes naming a missing or empty class, net, part or room |
+| `offline_pcb_pad_ties` | how pads really join their pours, against the rule |
+| `offline_pcb_neck` | the bottleneck of a power path, per layer |
+| `offline_sch_netlist`, `offline_sch_check`, `offline_sch_part`, `offline_sch_bom` | read and check a schematic |
+| `offline_sch_compare` | what changed between two netlists (schematic, board or Altium's dump) |
+| `offline_sch_rules` | check repeated circuit blocks against rules |
+| `offline_sch_footprints` | footprints and pins before Update PCB, with the update previewed |
+| `calc_pwm_ripple`, `calc_profet`, `calc_profet_network`, `calc_mosfet_stage` | power-stage calculators |
 
 Paths must be absolute (a relative one would resolve against the server's
 own working folder). Writers take an output path and refuse to write onto

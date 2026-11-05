@@ -242,3 +242,72 @@ class RuleSet:
         return {"min_diameter": c.length("MINWIDTH"), "max_diameter": c.length("MAXWIDTH"),
                 "min_hole": c.length("MINHOLEWIDTH"), "max_hole": c.length("MAXHOLEWIDTH"),
                 "diameter": c.length("WIDTH"), "hole": c.length("HOLEWIDTH"), "rule": c.name}
+
+
+def dead_scopes(doc):
+    """Rules whose scope names something that does not exist or is empty: a net
+    class, pad class, component class, net, component or room. Such a branch
+    can never match, so "(InNetClass('Power')) or IsVia" quietly becomes
+    "IsVia" when there is no class Power. One row per dead predicate."""
+    from .scope import ScopeError, predicates
+    classes = {}
+    for c in doc.classes:
+        classes.setdefault((c.kind, c.name.upper()), []).extend(c.members)
+    nets = {n.name.upper() for n in doc.nets}
+    comps = {c.designator.upper() for c in doc.components}
+    rooms = {r.name.upper() for r in doc.rules if r.kind == "RoomDefinition"}
+    kinds = {"INNETCLASS": "net", "INPADCLASS": "pad", "INCOMPONENTCLASS": "component",
+             "INPOLYGONCLASS": "polygon", "INDIFFERENTIALPAIRCLASS": "diff_pair"}
+    out = []
+    for r in doc.rules:
+        for which, expr in (("scope1", r.scope1), ("scope2", r.scope2)):
+            try:
+                preds = predicates(expr)
+            except ScopeError as e:
+                out.append({"rule": r.name, "kind": r.kind, "priority": r.priority,
+                            "where": which, "predicate": None, "scope": expr,
+                            "problem": f"scope does not parse: {e}"})
+                continue
+            for name, arg in preds:
+                n, a = name.upper(), arg.upper()
+                why = None
+                if n in kinds:
+                    k = kinds[n]
+                    if (k, a) not in classes:
+                        why = f"no {k.replace('_', ' ')} class named {arg!r}"
+                    elif not classes[(k, a)] and not a.startswith("ALL "):
+                        # Altium's built-in "All ..." classes are empty when the board
+                        # simply has none of that kind
+                        why = f"{k.replace('_', ' ')} class {arg!r} has no members"
+                elif n == "INNET" and a not in nets:
+                    why = f"no net named {arg!r}"
+                elif n == "INCOMPONENT" and a not in comps:
+                    why = f"no component {arg!r}"
+                elif n in ("WITHINROOM", "TOUCHESROOM", "INROOM") and a not in rooms:
+                    why = f"no room named {arg!r}"
+                if why:
+                    out.append({"rule": r.name, "kind": r.kind, "priority": r.priority,
+                                "where": which, "predicate": f"{name}('{arg}')", "scope": expr,
+                                "problem": why})
+    return out
+
+
+def cmd_rule_scopes(args):
+    import json
+    from .pcbdoc import PcbDoc
+    rows = dead_scopes(PcbDoc.open(args.board))
+    if args.json:
+        print(json.dumps(rows, indent=1))
+        return 0
+    for r in rows:
+        print(f"  {r['rule']} ({r['kind']}, {r['where']}): {r['predicate']}: {r['problem']}")
+    print(f"{len(rows)} dead scope predicate(s)")
+    return 0
+
+
+def register_commands(command):
+    def build(p):
+        p.add_argument("board")
+        p.add_argument("--json", action="store_true")
+    command("rule-scopes", cmd_rule_scopes,
+            "rule scopes that name a missing or empty class, net, part or room", build)

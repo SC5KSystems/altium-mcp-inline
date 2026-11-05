@@ -9,8 +9,9 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 
 ## Setup facts
 
-- `origin/phase-6-pdm-review-tools` does **not exist on the remote** (checked
-  2026-11-04 with `git ls-remote`). Per the brief, work started from
+- `origin/phase-6-pdm-review-tools` did **not exist on the remote** when work
+  began (checked 2026-11-04 with `git ls-remote`); it was pushed later and
+  ported (see "Phase-6 port notes"). Per the brief, work started from
   `origin/main` (`e29e0ac`) with `origin/claude/eager-ptolemy-4w4c4m` merged in
   (fast-forward to `09efd44`). The offline reader that branch was meant to
   carry (`server/offline/*`, `server/offline_tools.py`,
@@ -40,7 +41,8 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 | WP7 power copper: planner, thermal, vias, fuse, FETs | done offline; Altium's view of planned copper UNVERIFIED; thermal accuracy is a screen | `111dd83` |
 | WP8 autorouter bridge: DSN export, Freerouting, SES import | done; routed here with Freerouting 2.5.0 on Java 25; Altium's view of routed boards and a Windows run UNVERIFIED | `bd242ab` |
 | WP9 small tools: review-power, notches, stack, blank, assembly, fab-check, models3d, membership-audit, probe_processes | done offline; the live script, the probe and Altium opening a blank board UNVERIFIED | `902da45` |
-| WP10 MCP tools (`offline_pcb_*`), worked example, JSON netlist, `dev/live_validate_tools.py` | done; tools registered and called through FastMCP 1.5.0 here; the MCP server on Windows and the acceptance script against a real Altium UNVERIFIED | see git log ("MCP tools") |
+| WP10 MCP tools (`offline_pcb_*`), worked example, JSON netlist, `dev/live_validate_tools.py` | done; tools registered and called through FastMCP 1.5.0 here; the MCP server on Windows and the acceptance script against a real Altium UNVERIFIED | `a98d8d7` |
+| Phase-6 branch ported (holes, fasteners, edges, rule scopes, pad ties, neck, schematic tools, footprint check, calculators, two `pcb_utils.pas` fixes, validation harness) | done offline; ported, not merged (see notes); the harness on this reader and the deployed `.pas` fixes UNVERIFIED | see git log ("phase-6") |
 
 ## How to run
 
@@ -75,6 +77,13 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 - Membership audit (live): `python -m offline membership-audit --board-path "C:\...\x.PcbDoc" [--fix] -o audit.pas`, then run the body with `run_altium_script`
 - Process probe (live): `python dev/probe_processes.py --list`; `--board C:\scratch\copy.PcbDoc --next`
 - Second reader (Linux, KiCad installed): `python3.12 dev/kicad_read.py a.PcbDoc b.PcbDoc`
+- Holes / fasteners / edges: `python -m offline holes board.PcbDoc [--min 3 --mounting]`; `fasteners board.PcbDoc [--screw M3-pan|--head 8] [--margin 1]`; `edges board.PcbDoc [--within 3]`
+- Rule scopes naming missing things: `python -m offline rule-scopes board.PcbDoc`
+- Pad ties measured from the pours: `python -m offline pad-ties board.PcbDoc --nets VBAT GND`
+- Neck: `python -m offline neck board.PcbDoc --net VBAT --src J1 --dst Q1.D [--res 0.1] [--ignore 3]`
+- Schematics: `python -m offline sch-netlist|sch-check|sch-bom x.PrjPcb`; `sch-part x.PrjPcb U3`; `sch-rules x.PrjPcb rules.json`; `sch-compare a.PrjPcb b.PrjPcb|b.PcbDoc|altium_netlist.txt`; `sch-footprints x.PrjPcb [--board b.PcbDoc] [--lib folder]`
+- Calculators: `python -m offline ripple --r 1 --l 0.0005 --f 2000 [--duty 0.5]`; `profet --part BTS7008-1EPP --amps 8 [--rth 50] [--pwm 200]`
+- Offline reader against live Altium: `python dev\validate_offline_vs_altium.py board.PcbDoc` (after calling the nine read tools); `python dev\validation_ledger.py --log server\altium_mcp.log`
 - Worked example: `python -m offline example [-o folder]` (synthetic board: load, ECO, gaps, copper plan, pour, DRC, render, write)
 - MCP tools: `server/offline_tools.py`, registered by `main.py` (26 `offline_pcb_*` tools; `ALTIUM_MCP_OFFLINE_TOOLS=0` turns them off). Install their requirements into the server's Python once: `server\.venv\Scripts\python.exe -m pip install -r server\offline\requirements.txt`
 - Acceptance on the Altium PC, one command: `server\.venv\Scripts\python.exe dev\live_validate_tools.py C:\boards\x.PcbDoc [--project x.PrjPcb] [--gerbers folder] [--power VBAT:30:J1.1>Q1.D] [--wedge]` (`--list` for the steps)
@@ -521,6 +530,37 @@ builder), `autoroute.py` (net selection, Freerouting runner, report).
   the script must read the edit back from the saved file); against the real
   one they are UNVERIFIED (item 23).
 
+## Phase-6 port notes
+
+- The phase-6 branch (`98b87ff`, pushed on request after WP10) carried its
+  own simpler PcbDoc reader and 17 MCP tools. Its `dev/VALIDATION.md` named
+  the real project, board and two of its nets, so the branch was **ported,
+  not merged**: its content was brought over file by file with those names
+  removed, and none of its commits are in this branch's history. The remote
+  branch itself still holds them; deleting it is the owner's call.
+- Kept as they were: `schdoc.py`, `schnet.py`, `schtools.py` (boards now read
+  with this reader), `calc.py` (was `power.py`; the name was taken),
+  `dev/exp_*.pas`, `dev/validation_ledger.py`, the `pcb_utils.pas` stackup
+  micron fix and `pour_over_style`, and two `main.py` docstring notes.
+- Rewritten on this reader and shapely: `mech.py` (holes, fasteners, edges,
+  silkscreen; edge distance now counts board cutouts), `padties.py`,
+  `neck.py` (scipy's exact distance transform in place of a Python one),
+  `fpcheck.py` (footprints read with `footprints.PcbLib`), `rules.dead_scopes`
+  (on this scope parser). `dev/validate_offline_vs_altium.py` was ported to
+  this reader. The phase-6 PDN solver, SVG renderer and geometry helpers were
+  not brought over: `pdn.py`, `render.py` and `geom.py` here cover them.
+- Changed while porting: pad ties gained `direct_partial` (a merged pad
+  whose edge is partly cleared round another net, which the old rule called
+  a one-spoke relief; 39 of HiFive's 99 GND ties); the footprint check falls
+  back to the board's copy of a footprint before calling it missing, and
+  reports unreadable libraries instead of skipping them; built-in empty
+  "All ..." classes are not reported as dead scopes.
+- Checks here: synthetic tests for every ported tool (a 1.0 mm neck measures
+  1.00 mm; a 4-spoke 0.3 mm relief poured by `pour.py` measures 4 x ~0.3 mm);
+  on the public eDP fixture the schematic and its board agree pin for pin and
+  the footprint check's unique-ID preview flags C22P, the part the ECO
+  preview also flags.
+
 ## UNVERIFIED (needs Altium)
 
 Run these on the Altium PC, in order. Each says what passing looks like.
@@ -682,12 +722,25 @@ step fails.
     the run folder (`C:\scratch\offline_check\run_*`) has the files and
     `results.json`. If `env` fails, it prints the pip line to run.
 24. **The MCP client sees the offline tools.** Restart the MCP server from
-    the client. Pass: the client lists 26 `offline_pcb_*` tools; ask it to
+    the client. Pass: the client lists 43 offline tools (`offline_pcb_*`,
+    `offline_sch_*`, `calc_*`); ask it to
     call `offline_pcb_info` on a board file (answers `ok: true` with nets
     and parts) and `offline_pcb_render` (the picture shows in the chat).
     Fail: if only `offline_pcb_unavailable` is listed, call it and send the
     error (and `server\altium_mcp.log`); if the tools answer an ImportError,
     install the requirements as in item 23.
+25. **The offline reader against live Altium (phase-6 harness, this
+    reader).** Open a board, save it, call the nine read tools listed at the
+    top of `dev/VALIDATION.md`, then
+    `python dev\validate_offline_vs_altium.py <the board>.PcbDoc`. Pass: every
+    line PASS except, until item 26 is done, the two stackup lines. Fail: a
+    FAIL line names the response that disagrees; check the board was saved,
+    then send that line (it can name a net).
+26. **The two `pcb_utils.pas` fixes deployed.** Restart the server with this
+    branch, call `get_pcb_layer_stackup` and `get_polygon_data` on a board
+    with 2 oz copper. Pass: copper reads 70 um (not 108.5), and polygons carry
+    `pour_over_style` 1 or 2 matching the file's POUROVERSTYLE; item 25 then
+    passes in full. Fail: send both responses.
 
 ## Decisions made without asking
 
@@ -747,6 +800,14 @@ step fails.
   the answer, because they can be large. An existing design file is replaced
   only with `overwrite=true`. One `offline_pcb_unavailable` stub replaces
   the set if `offline_tools` cannot load, so the server still starts.
+- Phase-6 port: ported rather than merged so the real names in its
+  VALIDATION.md never enter this history; one PcbDoc reader (this one);
+  both schematic readers kept until one is chosen; `offline_pcb_summary`
+  folded into `offline_pcb_info` (stackup, copper weight, poured area);
+  tool names `offline_sch_*` and `calc_*` kept from that branch; examples
+  and test data that described the real design (its ADC, load values,
+  load kinds) replaced with generic ones; the PROFET datasheet tables
+  stay (public parts).
 - The acceptance script works in a new `run_<time>` folder per run, asks the
   person to open files rather than opening them from a script (a dialog
   during a scripted open would wedge the engine), rips up three small

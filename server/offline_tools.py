@@ -1,4 +1,5 @@
-"""Offline PCB tools for the MCP server: the offline_pcb_* tools.
+"""Offline tools for the MCP server: offline_pcb_* (boards), offline_sch_*
+(schematics) and calc_* (power-stage calculators).
 
 They read and write Altium .PcbDoc files directly, without Altium: look at a
 board, check it, plan edits and write the result to a new file. Altium is
@@ -237,6 +238,25 @@ def offline_pcb_info(board: str, limit: int = 500) -> dict:
         out["outline"] = None
     out["copper_mm"] = {_layer_name(lay): round(doc.copper_thickness(lay), 4)
                         for lay in doc.copper_layers}
+    out["copper_oz"] = {k: round(v * 1000 / 35.0, 2) for k, v in out["copper_mm"].items()}
+    stack = doc.layer_stack
+    out["stackup"] = [{"layer": stack[lay]["name"], "copper_mm": round(stack[lay]["copper_mm"], 4),
+                       "dielectric_below_mm": round(stack[lay]["diel_mm"], 4)
+                       if lay in stack and stack[lay]["diel_mm"] else None,
+                       "dielectric": stack[lay]["diel_material"] or None}
+                      for lay in doc.copper_layers if lay in stack]
+    out["board_thickness_mm"] = round(doc.thickness, 3)
+    poured = {}
+    try:
+        from offline import geom
+        for r in doc.regions:
+            if r.polygon is not None and r.kind == "copper":
+                k = _layer_name(r.layer)
+                poured[k] = poured.get(k, 0.0) + geom.region_shape(r).area
+    except ImportError as e:
+        poured = {"error": f"{e} ({INSTALL_HINT})"}
+    out["poured_copper_mm2"] = {k: round(v, 1) if isinstance(v, float) else v
+                                for k, v in poured.items()}
     nets = [{"name": n.name, "pads": pad_count.get(n.index, 0)} for n in doc.nets]
     comps = [{"designator": c.designator, "pattern": c.pattern, "x": round(c.x, 4),
               "y": round(c.y, 4), "rotation": round(c.rotation, 3), "side": c.side}
@@ -915,6 +935,317 @@ def offline_pcb_membership_audit_script(board_path: str, fix: bool = False,
             "proven": False, "run": "run_altium_script with this body; the board must be open"}
 
 
+# ---------------------------------------------------------------- mechanical, ties, neck
+
+def offline_pcb_holes(board: str, min_diameter: float = 0.0, mounting_only: bool = False) -> dict:
+    """Drilled holes (pad barrels and vias) larger than min_diameter mm, with
+    each one's distance to the board edge (cutouts count as edges).
+    mounting_only lists only holes that belong to no component (board
+    fasteners).
+
+    Use when checking mounting holes, edge distances or drill sizes.
+    """
+    from offline import mech
+    doc = _doc(board)
+    rows = mech.mounting_holes(doc, min_diameter) if mounting_only else \
+        mech.holes(doc, min_diameter)
+    return {"holes": rows, "count": len(rows)}
+
+
+def offline_pcb_fasteners(board: str, screw: str = "M4-pan", washer: bool = False,
+                          head_diameter: Optional[float] = None,
+                          edge_margin: float = 1.0) -> dict:
+    """For each mounting hole (a hole of 3 mm or more in no component): how far
+    the screw head or washer is from the board edge, how far the hole must
+    move inward for edge_margin mm, and which other nets' copper (per outer
+    layer) and which parts lie under the head.
+
+    Use before fixing a board with screws. screw: M3-pan, M3-cap, M4-pan,
+    M4-cap, M5-pan, M5-cap or M6-pan; head_diameter (mm) overrides it.
+    """
+    from offline import mech
+    return {"holes": mech.fastener_report(_doc(board), screw, washer, head_diameter,
+                                          edge_margin)}
+
+
+def offline_pcb_edges(board: str, within: float = 3.0, silk_gap: float = 0.2) -> dict:
+    """Parts whose pads come within `within` mm of the board edge, lie
+    outside it or whose 3D body hangs over it, and silkscreen that crosses
+    the edge, lies outside it or is closer than silk_gap mm (what Altium's
+    Board Outline Clearance check flags for silkscreen).
+
+    Use for an edge and outline review of a board file.
+    """
+    from offline import mech
+    doc = _doc(board)
+    return {"near_or_over_edge": mech.edge_items(doc, within),
+            "silkscreen_outline_clearance": mech.outline_clearance(doc, silk_gap)}
+
+
+def offline_pcb_rules_check(board: str) -> dict:
+    """Rules whose scope names something that does not exist or is empty: a
+    net class, pad class, component class, net, component or room. Such a
+    branch never matches, so "(InNetClass('Power')) or IsVia" silently
+    becomes "IsVia" when there is no class Power.
+
+    Use when a rule seems not to apply, and as part of any rule review.
+    """
+    from offline.rules import dead_scopes
+    rows = dead_scopes(_doc(board))
+    return {"dead_scopes": rows, "count": len(rows)}
+
+
+def offline_pcb_pad_ties(board: str, nets: List[str]) -> dict:
+    """How each pad on the given nets is actually tied into its pour, measured
+    from the saved copper: direct, direct_partial (merged, part of the edge
+    cleared round another net), relief (spoke count and widths) or none,
+    beside what the PolygonConnect rule says.
+
+    Use when a pad's current path matters (power pads, thermal pads) or to
+    find pours whose saved copper disagrees with the rules. Repour first
+    (offline_pcb_repour) if the saved pours are stale.
+    """
+    from offline.padties import pad_connections
+    return pad_connections(_doc(board), nets)
+
+
+def offline_pcb_neck(board: str, net: str, sources: List[str], sinks: List[str],
+                     res: float = 0.1, ignore: float = 3.0) -> dict:
+    """The narrowest point of a net's copper on the widest route between two
+    pad groups, per copper layer, with the IPC-2221 current that width
+    carries (external layer, +10 and +20 C).
+
+    Use to find the bottleneck of a power path quickly. sources/sinks are
+    pads ("J1" = every pad of J1 on the net, or "J1.1"); copper within
+    `ignore` mm of them is not judged. Layers are judged one at a time; for
+    the whole net with vias use offline_pcb_pdn.
+    """
+    from offline.neck import neck_between
+    return {"net": net, "layers": neck_between(_doc(board), net, sources, sinks, res, ignore)}
+
+
+# ---------------------------------------------------------------- schematics
+
+def _sch(path, kinds=(".prjpcb", ".schdoc")):
+    from offline import schtools
+    p = _in(path, "schematic")
+    if p.suffix.lower() not in kinds:
+        raise ToolError(f"{p.name}: expected {', '.join(kinds)}")
+    return schtools.load_any(p)
+
+
+def offline_sch_netlist(schematic: str, net: str = "", designator: str = "") -> dict:
+    """The netlist of a saved schematic project (.PrjPcb, every sheet) or one
+    .SchDoc: every net with its pins, and the components. Needs no Altium;
+    unsaved edits are not in the files.
+
+    Use to read a schematic's connectivity. net limits to nets whose name
+    contains it; designator to nets touching that part.
+    """
+    from offline import schtools
+    src = _sch(schematic)
+    nl = src.netlist
+    nets = []
+    for n in nl.nets:
+        if net and net.lower() not in n.name.lower():
+            continue
+        if designator and not any(p.designator == designator for p in n.pins):
+            continue
+        nets.append({"name": n.name, "auto_named": n.auto_named, "sheets": n.sheets,
+                     "pins": ["%s.%s %s" % (p.designator, p.pin, p.pin_name) for p in n.pins]})
+    comps = [{"designator": d, "comment": c["comment"], "sheet": c["sheet"]}
+             for d, c in sorted(src.components.items(), key=lambda kv: schtools.natural_key(kv[0]))]
+    return {"summary": nl.summary(), "nets": nets,
+            "components": comps if not (net or designator) else None}
+
+
+def offline_sch_check(schematic: str, include_info: bool = False) -> dict:
+    """Schematic problems from the saved files: unconnected pins, single-pin
+    nets, floating or empty net labels, floating power ports, nets with two
+    names, duplicate or unannotated designators, nets driven by two outputs,
+    wire ends inside another wire with no junction.
+
+    Use to review a schematic before Update PCB. include_info adds info-level
+    findings (stub wires, hierarchy not followed).
+    """
+    nl = _sch(schematic).netlist
+    return {"summary": nl.summary(),
+            "findings": [f.as_dict() for f in nl.findings
+                         if include_info or f.severity != "info"]}
+
+
+def offline_sch_compare(before: str, after: str, ignore_single_pin: bool = True) -> dict:
+    """What changed between two netlists: components added, removed or changed,
+    nets added, removed, renamed, split or merged, pins that joined or left a
+    net. Nets are matched by the pins they share.
+
+    Use to review a schematic edit (an old saved copy against the new one),
+    to check a board matches its schematic (.PrjPcb against .PcbDoc), or to
+    compare with Altium's compiled netlist (a NET| text dump). Each side is a
+    .PrjPcb, .SchDoc, .PcbDoc or that .txt.
+    """
+    from offline import schtools
+    kinds = (".prjpcb", ".schdoc", ".pcbdoc", ".txt")
+    res = schtools.compare(_sch(before, kinds), _sch(after, kinds), ignore_single_pin)
+    res["report"] = schtools.format_compare(res)
+    return res
+
+
+def offline_sch_bom(schematic: str) -> dict:
+    """Bill of materials from a schematic: one row per part type with
+    designators, quantity, comment, description, manufacturer and MPN where
+    the parts carry them, and search_terms (MPN spellings worth trying in a
+    parts search: packing suffix dropped, then the family stem).
+
+    Use to build or check a BOM, or to look parts up.
+    """
+    from offline import schtools
+    return {"lines": schtools.bom(_sch(schematic))}
+
+
+def offline_sch_part(schematic: str, designator: str) -> dict:
+    """One component's pins, the net on each and the other parts on that net
+    (crowded nets such as ground summarised by count).
+
+    Use to see how a part is wired, or which of its pins are unconnected.
+    """
+    from offline import schtools
+    return schtools.part_view(_sch(schematic), designator)
+
+
+def offline_sch_rules(schematic: str, rules: List[Any]) -> dict:
+    """Check every instance of a circuit block against rules, e.g. that each
+    high-side switch's sense pin has a resistor to ground and reaches an ADC.
+
+    Use for design-rule reviews of repeated circuit blocks. Each rule:
+    parts (regex on designator, comment, library reference, design item,
+    description, MPN), pin (regex on pin names, or "#4" for pin number 4),
+    expect ("connected", "net_name", "same_net", "resistor_to",
+    "capacitor_to", "diode_to", "two_pin_to" or "connects_to"), net (regex
+    for net_name or the far end), prefix (designator prefix for two_pin_to),
+    part (regex for connects_to), via (designator prefix of one series part
+    connects_to may pass), name. Example: [{"parts": "HSW", "pin": "IS",
+    "expect": "resistor_to", "net": "GND"}, {"parts": "HSW", "pin": "IS",
+    "expect": "connects_to", "part": "ADC", "via": "R"}].
+    """
+    from offline import schtools
+    results = schtools.check_rules(_sch(schematic), _json_arg(rules, "rules"))
+    counts = {}
+    for r in results:
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+    return {"counts": counts, "results": results}
+
+
+def offline_sch_footprints(project: str, board: Optional[str] = None,
+                           extra_libs: Optional[List[str]] = None) -> dict:
+    """Before Design > Update PCB Document: for every part, a current PCB
+    footprint, found in the project's PcbLibs (or the board, or extra_libs),
+    and a pad for every pin. With a board (the project's own by default),
+    previews the update matching parts by unique ID as Altium does: parts
+    added and removed, footprint swaps, renames, board parts with no link.
+
+    Use before every Update PCB. extra_libs: .PcbLib files or folders, e.g.
+    the copies Altium keeps of released workspace footprints.
+    """
+    from offline import fpcheck
+    prj = _in(project, "project")
+    if prj.suffix.lower() != ".prjpcb":
+        raise ToolError(f"{prj.name}: expected a .PrjPcb")
+    libs = [str(_in(x, "extra_libs")) for x in extra_libs or []]
+    res = fpcheck.check(prj, str(_in(board, "board")) if board else None, libs)
+    res["report"] = fpcheck.format_check(res)
+    return res
+
+
+# ---------------------------------------------------------------- calculators
+
+def calc_pwm_ripple(volts: float, resistance_ohm: float, inductance_h: float,
+                    frequency_hz: float, duty: float = 0.5) -> dict:
+    """Steady-state current in an R-L load (a pump or a solenoid) chopped by
+    PWM with a freewheel path: average, minimum, maximum, peak-to-peak and
+    the period against L/R.
+
+    Use to choose a PWM frequency: near the load's L/R pole the current
+    collapses every cycle. inductance in henries (550 uH = 0.00055).
+    """
+    from offline import calc
+    return calc.rl_ripple(volts, resistance_ohm, inductance_h, frequency_hz, duty)
+
+
+def calc_profet(part: str, amps: float, ambient_c: float = 85.0,
+                rth_ja_k_per_w: Optional[float] = None,
+                pwm_hz: Optional[float] = None) -> dict:
+    """Junction temperature, continuous-current limit and PWM cost of an
+    Infineon PROFET+2 channel (BTS7008-1EPP or BTS7008-2EPA), from datasheet
+    values.
+
+    Use when sizing a high-side switch channel. The default junction-to-
+    ambient is the datasheet's 4-layer JEDEC figure, which a 2-layer board
+    will not reach: pass your own rth_ja_k_per_w.
+    """
+    from offline import calc
+    if part not in calc.PROFETS:
+        raise ToolError(f"unknown part {part!r}; known: {sorted(calc.PROFETS)}")
+    return {"steady": calc.profet_operating_point(part, amps, ambient_c, rth_ja_k_per_w),
+            "max_continuous_a": calc.max_current_for_tj(part, ambient_c, rth_ja_k_per_w),
+            "pwm": calc.profet_pwm(part, pwm_hz, amps, t_amb=ambient_c, rth_ja=rth_ja_k_per_w)
+            if pwm_hz else None, "datasheet": calc.PROFETS[part]}
+
+
+def calc_profet_network(part: str, sense_full_scale_a: Optional[float] = None,
+                        adc_full_scale_v: Optional[float] = None,
+                        input_high_v: Optional[float] = None,
+                        input_series_ohm: Optional[float] = None,
+                        pulse_peak_a: Optional[float] = None, pulse_s: Optional[float] = None,
+                        load_inductance_h: Optional[float] = None) -> dict:
+    """Size the parts around a PROFET+2 channel from datasheet values: the
+    sense resistor for an ADC full scale, the current into the IN pin's 7 V
+    clamp from a higher drive signal, and whether a short high-current pulse
+    stays under the overload threshold (with its flyback energy against the
+    clamp rating where the datasheet gives one).
+
+    Use when designing a channel's sense, input and pulse handling. Give only
+    the groups you need.
+    """
+    from offline import calc
+    if part not in calc.PROFETS:
+        raise ToolError(f"unknown part {part!r}; known: {sorted(calc.PROFETS)}")
+    out = {"part": part}
+    if sense_full_scale_a and adc_full_scale_v:
+        out["sense_resistor"] = calc.sense_resistor(part, sense_full_scale_a, adc_full_scale_v)
+    if input_high_v is not None and input_series_ohm:
+        out["input"] = calc.input_network(input_high_v, input_series_ohm)
+    if pulse_peak_a and pulse_s:
+        out["pulse"] = calc.solenoid_pulse(part, pulse_peak_a, pulse_s, load_inductance_h)
+    if len(out) == 1:
+        raise ToolError("give at least one group: sense, input or pulse")
+    return out
+
+
+def calc_mosfet_stage(rds_hot_mohm: float, qg_nc: float, qgd_nc: float, v_plateau: float,
+                      v_drive: float, r_gate_on_ohm: float, r_gate_off_ohm: float,
+                      load_a: float, bus_v: float, pwm_hz: float, duty: float,
+                      qgs2_nc: float = 0.0, diode_vf: Optional[float] = None,
+                      diode_qrr_nc: float = 0.0, rth_ja_k_per_w: Optional[float] = None,
+                      ambient_c: Optional[float] = None) -> dict:
+    """Loss budget of a discrete PWM switch driving an inductive load:
+    switching (Miller-plateau model), conduction, gate drive and, with
+    diode_vf, the freewheel diode.
+
+    Use to size a FET and its gate drive for a PWM load. Switching loss leaves
+    out Coss and reverse recovery, so it is a floor. Give Rds(on) at the
+    junction temperature you expect.
+    """
+    from offline import calc
+    out = {"fet": calc.mosfet_stage(rds_hot_mohm, qg_nc, qgd_nc, v_plateau, v_drive,
+                                    r_gate_on_ohm, r_gate_off_ohm, load_a, bus_v, pwm_hz, duty,
+                                    qgs2_nc, rth_ja_k_per_w, ambient_c)}
+    if diode_vf is not None:
+        out["diode"] = calc.freewheel_diode(diode_vf, load_a, duty, diode_qrr_nc, bus_v, pwm_hz)
+        out["stage_total_w"] = round(out["fet"]["p_fet_w"] + out["diode"]["p_diode_w"], 3)
+    return out
+
+
 # ---------------------------------------------------------------- MCP
 
 TOOLS = [
@@ -925,6 +1256,11 @@ TOOLS = [
     offline_pcb_apply_plan, offline_pcb_live_scripts, offline_pcb_eco_preview,
     offline_pcb_eco_apply, offline_pcb_copper_plan, offline_pcb_repour, offline_pcb_autoroute,
     offline_pcb_blank_board, offline_pcb_assembly_page, offline_pcb_membership_audit_script,
+    offline_pcb_holes, offline_pcb_fasteners, offline_pcb_edges, offline_pcb_rules_check,
+    offline_pcb_pad_ties, offline_pcb_neck,
+    offline_sch_netlist, offline_sch_check, offline_sch_compare, offline_sch_bom, offline_sch_part,
+    offline_sch_rules, offline_sch_footprints,
+    calc_pwm_ripple, calc_profet, calc_profet_network, calc_mosfet_stage,
 ]
 
 

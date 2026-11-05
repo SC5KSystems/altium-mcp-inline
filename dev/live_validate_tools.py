@@ -195,12 +195,12 @@ class Run:
 
             def add_tool(self, fn, name=None, description=None):
                 self.names.append(name)
-        n = len(T.register(Fake()))
+        names = set(T.register(Fake()))
+        n = len(names)
         detail = f"python {sys.version.split()[0]}, " + ", ".join(
             f"{k} {v}" for k, v in versions.items()) + f"; {n} offline tools"
         if self.live is not None:
-            listed = [t for t in self.loop_run(self.live.mcp.list_tools())
-                      if t.name.startswith("offline_pcb_")]
+            listed = [t for t in self.loop_run(self.live.mcp.list_tools()) if t.name in names]
             detail += f"; main.py registers {len(listed)}"
             if len(listed) != n:
                 self.record("env", FAIL, detail)

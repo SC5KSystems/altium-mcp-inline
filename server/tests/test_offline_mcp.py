@@ -59,7 +59,8 @@ class Surface(unittest.TestCase):
         names = [f.__name__ for f in T.TOOLS]
         self.assertEqual(len(names), len(set(names)))
         for f in T.TOOLS:
-            self.assertTrue(f.__name__.startswith("offline_pcb_"), f.__name__)
+            self.assertTrue(f.__name__.startswith(("offline_pcb_", "offline_sch_", "calc_")),
+                            f.__name__)
             doc = inspect.getdoc(f) or ""
             self.assertIn("Use ", doc, f"{f.__name__}: say when to use it")
             for p in inspect.signature(f).parameters:
@@ -247,6 +248,52 @@ class WorkedExample(unittest.TestCase):
                    board_path="C:\\scratch\\b.PcbDoc", out_dir=str(self.dir / "live"))
         self.assertTrue(r["ok"], r)
         self.assertTrue((self.dir / "live" / "manifest.json").exists())
+
+    def test_ported_tools(self):
+        """The tools ported from the phase-6 branch, each called once."""
+        from offline import fixtures
+        f = self.steps["files"]
+        board = f["final"]
+        calls = [
+            (T.offline_pcb_holes, {"board": board}),
+            (T.offline_pcb_fasteners, {"board": board, "screw": "M3-pan"}),
+            (T.offline_pcb_edges, {"board": board}),
+            (T.offline_pcb_rules_check, {"board": board}),
+            (T.offline_pcb_pad_ties, {"board": board, "nets": ["GND"]}),
+            (T.offline_pcb_neck, {"board": board, "net": "VBAT", "sources": ["J1"],
+                                  "sinks": ["Q1.D"]}),
+            (T.calc_pwm_ripple, {"volts": 13.5, "resistance_ohm": 1.0, "inductance_h": 5e-4,
+                                 "frequency_hz": 2000}),
+            (T.calc_profet, {"part": "BTS7008-1EPP", "amps": 5, "pwm_hz": 100}),
+            (T.calc_profet_network, {"part": "BTS7008-2EPA", "sense_full_scale_a": 10,
+                                     "adc_full_scale_v": 3.3}),
+            (T.calc_mosfet_stage, {"rds_hot_mohm": 5, "qg_nc": 50, "qgd_nc": 15, "v_plateau": 4,
+                                   "v_drive": 10, "r_gate_on_ohm": 10, "r_gate_off_ohm": 5,
+                                   "load_a": 10, "bus_v": 14, "pwm_hz": 2000, "duty": 0.5,
+                                   "diode_vf": 0.5}),
+        ]
+        prj = fixtures.by_name("eDP_adapter_dvt1.PrjPcb", ".PrjPcb")
+        if prj:
+            pcb = str(Path(prj).with_name("eDP_adapter_dvt1.PcbDoc"))
+            calls += [(T.offline_sch_netlist, {"schematic": prj, "net": "GND"}),
+                      (T.offline_sch_check, {"schematic": prj}),
+                      (T.offline_sch_compare, {"before": prj, "after": pcb}),
+                      (T.offline_sch_bom, {"schematic": prj}),
+                      (T.offline_sch_part, {"schematic": prj, "designator": "U10C"}),
+                      (T.offline_sch_rules, {"schematic": prj, "rules": [
+                          {"parts": "^C", "pin": "#1", "expect": "connected"}]}),
+                      (T.offline_sch_footprints, {"project": prj})]
+        for fn, kw in calls:
+            r = T.call(fn, **kw)
+            self.assertTrue(r["ok"], (fn.__name__, r.get("error")))
+            json.dumps(r, allow_nan=False)
+        info = T.call(T.offline_pcb_info, board=board)
+        self.assertEqual(info["copper_oz"], {"Top Layer": 2.0, "Bottom Layer": 2.0})
+        self.assertGreater(info["poured_copper_mm2"]["Bottom Layer"], 1000)
+        r = T.call(T.calc_profet, part="NOPE", amps=1)
+        self.assertFalse(r["ok"])
+        r = T.call(T.offline_sch_netlist, schematic=board)
+        self.assertIn("expected", r["error"])
 
     @unittest.skipUnless(HAVE_MCP, "mcp not installed")
     def test_fastmcp(self):
