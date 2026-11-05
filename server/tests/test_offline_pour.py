@@ -245,11 +245,11 @@ class PourAccuracy(unittest.TestCase):
                     worst.append((c["iou"], f"{f.parent.name}/{f.stem}/{i}"))
         iou = {g: o / (a + b - o) for g, (a, b, o) in tot.items() if a + b > 0}
         worst.sort()
-        # KiCad's boards were the calibration set; AltiumSharp's 4-layer boards'
-        # big GND pours come out about 1 % larger than saved (dev/CLOUD_HANDOFF.md)
+        # KiCad's boards were the calibration set; all boards together (with
+        # AltiumSharp's) measured 0.9975 after the IsPolygon fix (dev/CLOUD_HANDOFF.md)
         if "kicad" in iou:
             self.assertGreater(iou["kicad"], 0.99, worst[:5])
-        self.assertGreater(iou["all"], 0.985, worst[:5])
+        self.assertGreater(iou["all"], 0.995, worst[:5])
         # Fastino's top-layer pours connect SMD pads directly although its rule
         # says relief (see dev/CLOUD_HANDOFF.md); every other polygon is close
         others = [w for w in worst if "issue24456" not in w[1]]

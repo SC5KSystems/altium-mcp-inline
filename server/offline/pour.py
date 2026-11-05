@@ -712,7 +712,8 @@ def cmd_pour(args):
                 f"{r['pieces']:3d} piece(s) {r['spokes']:4d} spokes")
         if "vs_saved" in r:
             c = r["vs_saved"]
-            line += (f" | saved {c['saved_mm2']:10.3f} iou {c['iou']} "
+            line += (f" | without own-net objects: ours {c['ours_mm2']:10.3f} saved "
+                     f"{c['saved_mm2']:10.3f} iou {c['iou']} "
                      f"missing {c['missing_mm2']:.3f} extra {c['extra_mm2']:.3f}")
         print(line)
         for n in r["notes"]:

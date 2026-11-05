@@ -46,7 +46,8 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 | WP8 autorouter bridge: DSN export, Freerouting, SES import | done; routed here with Freerouting 2.5.0 on Java 25; Altium's view of routed boards and a Windows run UNVERIFIED | `bd242ab` |
 | WP9 small tools: review-power, notches, stack, blank, assembly, fab-check, models3d, membership-audit, probe_processes | done offline; the live script, the probe and Altium opening a blank board UNVERIFIED | `902da45` |
 | WP10 MCP tools (`offline_pcb_*`), worked example, JSON netlist, `dev/live_validate_tools.py` | done; tools registered and called through FastMCP 1.5.0 here; the MCP server on Windows and the acceptance script against a real Altium UNVERIFIED | `a98d8d7` |
-| Harder fixtures: AltiumSharp boards, panels, libraries, schematics in the cache; fixes they found | done | see git log ("harder fixtures") |
+| Harder fixtures: AltiumSharp boards, panels, libraries, schematics in the cache; fixes they found | done | `3c8926f` |
+| Speed on a large board; better pour match (IsPolygon scope, pour arc tolerance) | done offline | see git log ("speed") |
 | Phase-6 branch ported (holes, fasteners, edges, rule scopes, pad ties, neck, schematic tools, footprint check, calculators, two `pcb_utils.pas` fixes, validation harness) | done offline; ported, not merged (see notes); the harness on this reader and the deployed `.pas` fixes UNVERIFIED | `1867199` |
 
 ## How to run
@@ -216,16 +217,16 @@ skip over same-net pads and tracks, which are copper anyway).
 | issue24654 PCB1 | 2 | 4789.8 | 0.9956 | 0.9925 | 0.25 | 20.78 | 0.41 |
 | issue24847 PCB1 | 1 | 256.8 | 0.9976 | 0.9976 | 0.02 | 0.59 | 0.01 |
 | all | 41 | 17399.7 | 0.9937 | | 47.65 | 63.07 | |
-| AltiumSharp MAX5719 Breakout (4 layers) | 8 | | 0.9836 | 0.9770 | | | 4.4 |
+| AltiumSharp MAX5719 Breakout (4 layers) | 8 | | 0.9991 | 0.9982 | | | 4.4 |
 | AltiumSharp SPI Isolator | 9 | | 0.9983 | 0.9963 | | | 0.73 |
 | AltiumSharp USB Power Adapter | 2 | | 0.9980 | 0.9980 | | | 0.10 |
-| AltiumSharp VCOCXO Breakout (4 layers) | 17 | | 0.9886 | 0.9812 | | | 9.8 |
-| all 9 boards with pours (harder-fixtures round) | 77 | | 0.9897 | | | | |
+| AltiumSharp VCOCXO Breakout (4 layers) | 17 | | 0.9992 | 0.9812 | | | 9.8 |
+| all 9 boards with pours | 77 | | 0.9975 | | | | |
 
-The AltiumSharp rows and the last line are from the harder-fixtures round,
-after its dead-copper change (see "Harder fixtures notes"); the overall
-figure is lower than the first five boards' because the 4-layer boards'
-large GND pours come out about 1 % larger than saved.
+The AltiumSharp rows and the last line are after the harder-fixtures and
+pour-match changes (dead copper; IsPolygon). Before the IsPolygon fix the
+4-layer boards read 0.984 and 0.989 (their GND pours ran 0.2 mm too close
+to the board edge) and the whole set 0.9897.
 
 - Fastino's saved pours connect every SMD pad directly although the board's
   only PolygonConnect rule says SMD pads relief (its TH pads do have
@@ -603,6 +604,39 @@ builder), `autoroute.py` (net selection, Freerouting runner, report).
   between 1.25 mm-pitch connector pins leave 0.175 mm against 0.2 mm).
   The files hold almost no saved DRC results, so agreement with Altium's
   DRC is still only measurable on the Altium PC (item 14).
+
+## Speed and pour-match notes
+
+Every MCP tool on the synthetic stress board (`synth.stress_board`: 120 x
+100 mm, 2 layers, 3,612 tracks, 500 arcs, 480 pads, 300 vias, 48 polygons,
+204 nets; the brief's target size), seconds on this machine:
+
+| tool | s | tool | s |
+|---|---|---|---|
+| info | 0.04 | repour all 48 polygons (and write) | 4.7 |
+| rules check | 0.03 | DRC, pours as saved | 1.1 |
+| connectivity | 1.4 | DRC, pouring unpoured polygons first | 7.0 |
+| net gaps | 0.9 | render (PNG) | 3.4 |
+| PDN at 0.1 / 0.2 mm | 2.4 / 0.9 | thermal | 6.2 |
+| neck | 1.2 | copper plan | 8.8 |
+| review power, pad ties | 0.2, 0.7 | holes, fasteners, edges | < 0.1 each |
+| apply a plan and write | 0.2 | assembly page | 0.2 |
+
+Nothing needed speeding up at this size; autorouting is bounded by
+Freerouting itself (WP8 notes).
+
+- Pour match: Altium tests a polygon's poured copper as `IsPolygon`; this
+  scope language did not, so a BoardOutlineClearance rule scoped
+  `IsPolygon` never applied to pours (in the pour engine or the DRC). Fixed;
+  the 4-layer fixtures went to IoU 0.999.
+- With that, Altium's own saved pours sat 6 um inside the 0.2 mm edge
+  clearance at the board's rounded corners: pours follow arcs with chords
+  within the polygon's arc resolution (0.5 mil). The DRC now allows a
+  polygon's arc resolution on copper that polygon poured, so Altium's pours
+  do not show as violations.
+- `pour --compare` prints both areas without the net's own pads and tracks
+  (what IoU is computed on); the plain area still includes copper poured
+  over them.
 
 ## UNVERIFIED (needs Altium)
 

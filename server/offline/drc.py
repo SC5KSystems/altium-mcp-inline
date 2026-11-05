@@ -530,6 +530,16 @@ class DRC:
                                  f"{self._label(db)} {d:.4f} mm from the hole of "
                                  f"{self._label(self.describe(o))} < fab {need} mm")
 
+    def _arc_slack(self, obj):
+        """Poured copper follows arcs with chords no further off than its
+        polygon's arc resolution (0.5 mil unless set), so Altium's own pour can
+        sit that much inside a clearance at a curve without being a violation."""
+        pi = getattr(obj, "polygon", None)
+        if pi is None or not 0 <= pi < len(self.doc.polygons):
+            return 0.0
+        from .pcbdoc import parse_length
+        return parse_length(self.doc.polygons[pi].props.get("ARCRESOLUTION"), 0.0127)
+
     def _no_rule(self, kind):
         if self.rules.has_unevaluated(kind):
             self.skipped.append(f"{kind}: its rule(s) could not be evaluated (see "
@@ -569,9 +579,10 @@ class DRC:
                     gap, rule = self.rules.board_outline(it.obj)
                     if gap is not None:
                         limit, rname = gap, rule.name
+                tol = TOL + self._arc_slack(it.obj)
                 for lim, name in ((limit, rname),
                                   (edge or None, f"dfm:{self.preset_name}" if edge else None)):
-                    if lim is None or d >= lim - TOL:
+                    if lim is None or d >= lim - tol:
                         continue
                     key = (it.obj.storage, it.obj.index, name)
                     if key in found and found[key][1] <= d:

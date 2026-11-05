@@ -294,6 +294,12 @@ def _fn_table():
     def k(*kinds):
         return lambda c: obj_kind(c.obj) in kinds
 
+    def is_poly(c):
+        # a polygon, or the copper it poured (Altium tests a pour's copper as the polygon)
+        return obj_kind(c.obj) in ("polygon", "plane") or (
+            obj_kind(c.obj) in ("region", "track", "arc")
+            and getattr(c.obj, "polygon", None) is not None)
+
     def in_poly(c):
         return getattr(c.obj, "polygon", None) is not None or obj_kind(c.obj) in ("polygon", "plane")
 
@@ -330,8 +336,7 @@ def _fn_table():
         "FALSE": lambda c: False,
         "ISPAD": k("pad"), "ISVIA": k("via"), "ISTRACK": k("track"), "ISARC": k("arc"),
         "ISFILL": k("fill"), "ISREGION": k("region"), "ISTEXT": k("text"),
-        "ISCOMPONENT": k("component"), "ISPOLYGON": k("polygon", "plane"),
-        "ISPOLY": k("polygon", "plane"),
+        "ISCOMPONENT": k("component"), "ISPOLYGON": is_poly, "ISPOLY": is_poly,
         "ISCOMPONENTBODY": k("body"),
         "ISDESIGNATOR": lambda c: obj_kind(c.obj) == "text" and c.obj.is_designator,
         "ISCOMMENT": lambda c: obj_kind(c.obj) == "text" and c.obj.is_comment,

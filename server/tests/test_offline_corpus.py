@@ -124,6 +124,18 @@ class Scopes(unittest.TestCase):
         self.assertFalse(compile_scope("IsPoly").is_all)
         compile_scope("IsPoly or IsPolygon")
 
+    @unittest.skipUnless(VCOCXO and HAVE, "fixture or shapely missing")
+    def test_poured_copper_is_polygon(self):
+        """A pour's copper answers IsPolygon (its BoardOutlineClearance rule is
+        scoped so), other copper does not."""
+        from offline.scope import compile_scope
+        doc = PcbDoc.open(VCOCXO)
+        sc = compile_scope("IsPolygon")
+        poured = next(r for r in doc.regions if r.polygon is not None)
+        self.assertTrue(sc.match(doc, poured))
+        self.assertFalse(sc.match(doc, doc.tracks[0]) and doc.tracks[0].polygon is None)
+        self.assertFalse(sc.match(doc, doc.pads[0]))
+
 
 if __name__ == "__main__":
     unittest.main()
