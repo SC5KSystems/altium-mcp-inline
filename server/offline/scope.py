@@ -331,6 +331,7 @@ def _fn_table():
         "ISPAD": k("pad"), "ISVIA": k("via"), "ISTRACK": k("track"), "ISARC": k("arc"),
         "ISFILL": k("fill"), "ISREGION": k("region"), "ISTEXT": k("text"),
         "ISCOMPONENT": k("component"), "ISPOLYGON": k("polygon", "plane"),
+        "ISPOLY": k("polygon", "plane"),
         "ISCOMPONENTBODY": k("body"),
         "ISDESIGNATOR": lambda c: obj_kind(c.obj) == "text" and c.obj.is_designator,
         "ISCOMMENT": lambda c: obj_kind(c.obj) == "text" and c.obj.is_comment,

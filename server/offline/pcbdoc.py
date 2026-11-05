@@ -1371,6 +1371,10 @@ class PcbDoc:
         self.board_props = board[0] if board else Props.new([])
         self._net_by_name = {n.name.upper(): n for n in self.nets}
         self._comp_by_des = {c.designator.upper(): c for c in self.components}
+        self._comp_dups = {}
+        for c in self.components:
+            self._comp_dups.setdefault(c.designator.upper(), []).append(c.index)
+        self._comp_dups = {k: v for k, v in self._comp_dups.items() if len(v) > 1}
 
     def invalidate(self):
         """Forget cached derived data after an edit."""
@@ -1405,10 +1409,20 @@ class PcbDoc:
         return str(name).upper() in self._net_by_name
 
     def component(self, designator):
-        c = self._comp_by_des.get(str(designator).upper())
+        key = str(designator).upper()
+        c = self._comp_by_des.get(key)
         if c is None:
             raise KeyError(f"no component {designator!r}")
+        if key in self._comp_dups:
+            raise KeyError(f"designator {designator!r} is used by {len(self._comp_dups[key])} "
+                           f"components (indexes {self._comp_dups[key]}); annotate the board "
+                           "so each is unique, or refer to one by index")
         return c
+
+    @property
+    def duplicate_designators(self):
+        """{designator: [component indexes]} for designators used more than once."""
+        return {self.components[v[0]].designator: list(v) for v in self._comp_dups.values()}
 
     def has_component(self, designator):
         return str(designator).upper() in self._comp_by_des
@@ -1564,8 +1578,54 @@ class PcbDoc:
                 if r.polygon == polygon_index:
                     yield r
 
+    @property
+    def embedded_boards(self):
+        """Boards placed on this one by reference (a panel): [{document, x, y,
+        rows, cols, row_spacing, col_spacing, rotation}] in mm. Their copper
+        is in their own files, not in this document."""
+        return self._cached("embedded_boards", self._embedded_boards)
+
+    def _embedded_boards(self):
+        if not self.cf.exists("EmbeddedBoards6/Data"):
+            return []
+        out = []
+        for r in split_props(self.cf.read("EmbeddedBoards6/Data")):
+            out.append({"document": r.text("DOCUMENTPATH"),
+                        "x": parse_length(r.get("X"), 0.0), "y": parse_length(r.get("Y"), 0.0),
+                        "rows": int(parse_float(r.get("ROWCOUNT", "1"))),
+                        "cols": int(parse_float(r.get("COLCOUNT", "1"))),
+                        "row_spacing": parse_length(r.get("ROWSPACING"), 0.0),
+                        "col_spacing": parse_length(r.get("COLSPACING"), 0.0),
+                        "rotation": parse_float(r.get("ROTATION"), 0.0)})
+        return out
+
+    def panel_warning(self):
+        """A sentence for reports when this board embeds others, else None."""
+        eb = self.embedded_boards
+        if not eb:
+            return None
+        n = sum(max(1, e["rows"]) * max(1, e["cols"]) for e in eb)
+        docs = sorted({e["document"] for e in eb})
+        return (f"this is a panel: {n} embedded board instance(s) of {', '.join(docs)}; their "
+                "copper lives in those files and is not part of this analysis")
+
+    def board_warnings(self):
+        """Sentences every report should carry: a panel, duplicate designators."""
+        out = []
+        w = self.panel_warning()
+        if w:
+            out.append(w)
+        dups = self.duplicate_designators
+        if dups:
+            out.append(f"{len(dups)} designator(s) used by more than one component ("
+                       + ", ".join(sorted(dups)[:10]) + (", ..." if len(dups) > 10 else "")
+                       + "); tools refuse to act on them by name")
+        return out
+
     def summary(self):
         return {
+            "duplicate_designators": sorted(self.duplicate_designators),
+            "embedded_boards": len(self.embedded_boards),
             "file": self.path.name if self.path else None,
             "nets": len(self.nets), "components": len(self.components),
             "tracks": len(self.tracks), "arcs": len(self.arcs), "vias": len(self.vias),

@@ -46,8 +46,9 @@ def cmd_connect(args):
     nets = {doc.net_index(n) for n in args.nets} if args.nets else None
     rep = connect.report(doc, nets)
     s = rep["summary"]
-    text = [f"{s['nets']} nets, {s['islands']} islands, {s['unrouted_connections']} unrouted, "
-            f"{s['shorts']} shorts, {s['dead_copper_islands']} dead copper islands"]
+    text = [f"WARNING: {w}" for w in rep["warnings"]]
+    text += [f"{s['nets']} nets, {s['islands']} islands, {s['unrouted_connections']} unrouted, "
+             f"{s['shorts']} shorts, {s['dead_copper_islands']} dead copper islands"]
     for u in rep["unrouted"][:args.limit]:
         text.append(f"  gap {u['net']}: {u['gap_mm']:.3f} mm  {u['from']} -> {u['to']}")
     for x in rep["shorts"][:args.limit]:

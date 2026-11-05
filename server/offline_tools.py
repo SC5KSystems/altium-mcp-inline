@@ -227,7 +227,8 @@ def offline_pcb_info(board: str, limit: int = 500) -> dict:
         if p.net is not None:
             pad_count[p.net] = pad_count.get(p.net, 0) + 1
     pts = doc.outline()
-    out = {"summary": doc.summary(), "board": str(board)}
+    out = {"summary": doc.summary(), "board": str(board),
+           "warnings": doc.board_warnings()}
     if pts:
         xs, ys = [p[0] for p in pts], [p[1] for p in pts]
         out["outline"] = {"box": [round(min(xs), 4), round(min(ys), 4), round(max(xs), 4),

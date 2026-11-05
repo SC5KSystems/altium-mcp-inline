@@ -42,6 +42,7 @@ NECK_JOIN = "round"         # opening with round joins: mitred ones regrow cut n
 SPOKE_EXTEND = 0.5          # spoke length past the air gap, in conductor widths
 SQUARE_PAD_CLEARANCE = True  # clearance around rectangular pads: square corners
 DEAD_TRACKS_CONNECT = True  # an island touching only a same-net track/fill/region is alive
+OTHER_POURS_CONNECT = False  # another polygon's same-net copper does not keep a piece alive (VCOCXO fixture)
 SPOKE_COVER = 0.95         # share of the spoke's continuation that must be copper
 SPOKE_CAP = "flat"          # "round": the spoke is a track ending at the air gap's edge
 OTHER_KINDS = ("track", "arc", "via", "pad", "fill", "region", "text")
@@ -330,7 +331,8 @@ class PourEngine:
                 continue
             if net is not None and other.net == net:
                 if s.pour_over in (1, 2):
-                    anchors.append(g)
+                    if OTHER_POURS_CONNECT:
+                        anchors.append(g)
                     continue
             oprobe = self.probe(other)
             gap, _ = self.rules.clearance(probe, oprobe)

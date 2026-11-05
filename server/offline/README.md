@@ -106,7 +106,13 @@ so `dents()` shows where stale copper would leave a dent. `store(results,
 "pour" | "solid" | "unpoured")` writes the result through an Editor; the
 board in memory is then usable by `connect`, `pdn`, `render` and the DRC.
 `effective_copper()` is what checks use: saved copper where it exists, a
-fresh pour where a polygon is unpoured or listed as stale.
+fresh pour where a polygon is unpoured or listed as stale. Dead-copper
+removal keeps a piece only when it touches a same-net pad, via or free
+copper; another polygon's copper does not keep it alive (as Altium's saved
+pours show).
+
+A board that embeds other boards (a panel) is reported as one: the embedded
+boards' copper lives in their own files and is not analysed.
 
 ## DRC
 

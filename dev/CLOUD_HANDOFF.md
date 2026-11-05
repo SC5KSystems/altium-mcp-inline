@@ -23,7 +23,11 @@ Branch: `claude/gracious-rubin-f1hbv2`.
   importer test files (GitLab `kicad/code/kicad`, pinned commit
   `bbe344f935a87778920165cb8e019224dbd476f2`) to a cache outside the repo
   (`%LOCALAPPDATA%\altium-mcp\fixtures`, `~/.cache/altium-mcp/fixtures`, or
-  `$ALTIUM_FIXTURE_CACHE`). 9 PcbDocs, 3 PcbLibs, 3 SchDocs, 2 PrjPcbs.
+  `$ALTIUM_FIXTURE_CACHE`). 9 PcbDocs, 3 PcbLibs, 3 SchDocs, 2 PrjPcbs. Since
+  the harder-fixtures round it also fetches AltiumSharp's test data (GitHub
+  `issus/AltiumSharp`, MIT, pinned commit
+  `ce72437f30cd54f549601d4e0ca5846d21272150`): 6 PcbDocs (two of them
+  panels), 8 SchDocs and 89 PcbLibs (77 generated, one primitive kind each).
 - Network: GitLab, raw.githubusercontent.com and `git clone` from GitHub work;
   `api.github.com` returns 403 through the session proxy.
 
@@ -42,7 +46,8 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 | WP8 autorouter bridge: DSN export, Freerouting, SES import | done; routed here with Freerouting 2.5.0 on Java 25; Altium's view of routed boards and a Windows run UNVERIFIED | `bd242ab` |
 | WP9 small tools: review-power, notches, stack, blank, assembly, fab-check, models3d, membership-audit, probe_processes | done offline; the live script, the probe and Altium opening a blank board UNVERIFIED | `902da45` |
 | WP10 MCP tools (`offline_pcb_*`), worked example, JSON netlist, `dev/live_validate_tools.py` | done; tools registered and called through FastMCP 1.5.0 here; the MCP server on Windows and the acceptance script against a real Altium UNVERIFIED | `a98d8d7` |
-| Phase-6 branch ported (holes, fasteners, edges, rule scopes, pad ties, neck, schematic tools, footprint check, calculators, two `pcb_utils.pas` fixes, validation harness) | done offline; ported, not merged (see notes); the harness on this reader and the deployed `.pas` fixes UNVERIFIED | see git log ("phase-6") |
+| Harder fixtures: AltiumSharp boards, panels, libraries, schematics in the cache; fixes they found | done | see git log ("harder fixtures") |
+| Phase-6 branch ported (holes, fasteners, edges, rule scopes, pad ties, neck, schematic tools, footprint check, calculators, two `pcb_utils.pas` fixes, validation harness) | done offline; ported, not merged (see notes); the harness on this reader and the deployed `.pas` fixes UNVERIFIED | `1867199` |
 
 ## How to run
 
@@ -211,6 +216,16 @@ skip over same-net pads and tracks, which are copper anyway).
 | issue24654 PCB1 | 2 | 4789.8 | 0.9956 | 0.9925 | 0.25 | 20.78 | 0.41 |
 | issue24847 PCB1 | 1 | 256.8 | 0.9976 | 0.9976 | 0.02 | 0.59 | 0.01 |
 | all | 41 | 17399.7 | 0.9937 | | 47.65 | 63.07 | |
+| AltiumSharp MAX5719 Breakout (4 layers) | 8 | | 0.9836 | 0.9770 | | | 4.4 |
+| AltiumSharp SPI Isolator | 9 | | 0.9983 | 0.9963 | | | 0.73 |
+| AltiumSharp USB Power Adapter | 2 | | 0.9980 | 0.9980 | | | 0.10 |
+| AltiumSharp VCOCXO Breakout (4 layers) | 17 | | 0.9886 | 0.9812 | | | 9.8 |
+| all 9 boards with pours (harder-fixtures round) | 77 | | 0.9897 | | | | |
+
+The AltiumSharp rows and the last line are from the harder-fixtures round,
+after its dead-copper change (see "Harder fixtures notes"); the overall
+figure is lower than the first five boards' because the 4-layer boards'
+large GND pours come out about 1 % larger than saved.
 
 - Fastino's saved pours connect every SMD pad directly although the board's
   only PolygonConnect rule says SMD pads relief (its TH pads do have
@@ -560,6 +575,34 @@ builder), `autoroute.py` (net selection, Freerouting runner, report).
   on the public eDP fixture the schematic and its board agree pin for pin and
   the footprint check's unique-ID preview flags C22P, the part the ECO
   preview also flags.
+
+## Harder fixtures notes
+
+- Every tool ran over AltiumSharp's boards, libraries and schematics. No
+  crash; a no-op save is byte-identical on all 15 cached boards
+  (`test_offline_corpus.py` keeps it so); all 141 footprints in the 93
+  cached libraries parse, place on a board, save and read back with every
+  pad; both schematic readers agree on every net of two pins or more (`sch`
+  refuses the hierarchical sheet, as documented); SPI Isolator's schematic
+  and board agree pin for pin in both readers, apart from two mounting
+  pads that carry nets on the board only.
+- Fixed: a piece of pour touching only another polygon's same-net copper
+  now counts as dead, as Altium's saved copper shows (VCOCXO polygon 0
+  went from IoU 0.36 to 0.98; no other board changed); `IsPoly` is a scope
+  keyword (a BoardOutlineClearance rule was going unchecked); a check whose
+  rule cannot be evaluated now says so instead of "no rule".
+- Duplicate designators (MAX5719 has IC5 and C17-C20 twice): looking a part
+  up by such a name used to return one of them silently, so an EditPlan
+  naming it could act on the wrong part. It now refuses with both indexes,
+  and `info`, `connect` and the DRC carry a warning listing them.
+- Panels: a board that embeds others (`EmbeddedBoards6`) is now reported as
+  a panel by `info`, `connect`, the DRC and the MCP tools; the embedded
+  boards' copper is not analysed (it lives in their own files).
+- The DRC's findings on these boards were checked by hand where they looked
+  doubtful: SPI Isolator's 19 clearance errors are real (0.3 mm tracks
+  between 1.25 mm-pitch connector pins leave 0.175 mm against 0.2 mm).
+  The files hold almost no saved DRC results, so agreement with Altium's
+  DRC is still only measurable on the Altium PC (item 14).
 
 ## UNVERIFIED (needs Altium)
 

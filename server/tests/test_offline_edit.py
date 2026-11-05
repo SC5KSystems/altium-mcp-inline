@@ -265,11 +265,13 @@ class SaveTest(unittest.TestCase):
     def test_fixture_component_removal(self):
         for f in BOARDS:
             doc = PcbDoc.open(f)
-            if not doc.components:
+            dups = doc.duplicate_designators
+            named = [c for c in doc.components if c.designator and c.designator not in dups]
+            if not named:
                 continue
             with self.subTest(f.name):
                 ed = Editor(doc)
-                comp = max(doc.components, key=lambda c: sum(1 for p in doc.pads if p.component == c.index))
+                comp = max(named, key=lambda c: sum(1 for p in doc.pads if p.component == c.index))
                 ed.remove_component(comp.designator)
                 rep = ed.save(self.dir / f.name)
                 again = PcbDoc.open(self.dir / f.name)

@@ -442,7 +442,7 @@ class DRC:
     def check_rings(self):
         on = self.has_rules("MinimumAnnularRing")
         if not on and not self.preset:
-            self.skipped.append("MinimumAnnularRing: no rule")
+            self._no_rule("MinimumAnnularRing")
             return
         for o in self._drilled():
             if o.KIND == "pad" and not o.plated:
@@ -467,7 +467,7 @@ class DRC:
     def check_hole_to_hole(self):
         on = self.has_rules("HoleToHoleClearance")
         if not on and not self.preset:
-            self.skipped.append("HoleToHoleClearance: no rule")
+            self._no_rule("HoleToHoleClearance")
             return
         sh = geom.require()
         import numpy as np
@@ -530,11 +530,18 @@ class DRC:
                                  f"{self._label(db)} {d:.4f} mm from the hole of "
                                  f"{self._label(self.describe(o))} < fab {need} mm")
 
+    def _no_rule(self, kind):
+        if self.rules.has_unevaluated(kind):
+            self.skipped.append(f"{kind}: its rule(s) could not be evaluated (see "
+                                "unevaluated_rules); not checked")
+        else:
+            self.skipped.append(f"{kind}: no rule")
+
     def check_board_outline(self):
         on = self.has_rules("BoardOutlineClearance")
         edge = self.preset["copper_to_edge"] if self.preset else 0.0
         if not on and not edge:
-            self.skipped.append("BoardOutlineClearance: no rule")
+            self._no_rule("BoardOutlineClearance")
             return
         sh = geom.require()
         import numpy as np
@@ -578,7 +585,7 @@ class DRC:
 
     def check_silk(self):
         if not self.has_rules("SilkToSolderMaskClearance"):
-            self.skipped.append("SilkToSolderMaskClearance: no rule")
+            self._no_rule("SilkToSolderMaskClearance")
             return
         sh = geom.require()
         doc = self.doc
@@ -627,7 +634,7 @@ class DRC:
 
     def check_components(self):
         if not self.has_rules("ComponentClearance"):
-            self.skipped.append("ComponentClearance: no rule")
+            self._no_rule("ComponentClearance")
             return
         sh = geom.require()
         doc = self.doc
@@ -690,7 +697,7 @@ class DRC:
 
     def check_unrouted(self):
         if not self.has_rules("UnRoutedNet"):
-            self.skipped.append("UnRoutedNet: no rule")
+            self._no_rule("UnRoutedNet")
             return
         from .connect import Connectivity
         rule = self.rules.of_kind("UnRoutedNet")[0]
@@ -722,6 +729,7 @@ class DRC:
             "preset": dict(PRESETS[self.preset_name], name=self.preset_name) if self.preset else None,
             "unevaluated_rules": self.rules.unevaluated,
             "skipped": self.skipped,
+            "warnings": self.doc.board_warnings(),
             "seconds": self.seconds,
             "violations": [v.as_dict() for v in self.violations],
         }
@@ -844,6 +852,8 @@ def cmd_drc(args):
         print(f"  [{v.kind}] {v.layer or ''} {at} {v.message}" + (" ~" if v.approximate else ""))
     if len(drc.violations) > args.limit:
         print(f"  ... {len(drc.violations) - args.limit} more (--json for all)")
+    for msg in rep["warnings"]:
+        print(f"WARNING: {msg}")
     for msg in rep["skipped"]:
         print(f"skipped: {msg}")
     for u in rep["unevaluated_rules"]:

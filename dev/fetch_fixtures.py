@@ -2,8 +2,10 @@
 
 The repo is public and must never hold real design data, so the offline tools
 are tested against boards other projects already publish: KiCad's Altium
-importer test data (GPL project; the files are only downloaded, never
-committed or copied into this repo).
+importer test data (GPL project) and AltiumSharp's test data (MIT project):
+six boards (two of them panels), eight schematics and 89 footprint
+libraries, 77 of them generated to hold one kind of primitive each. The
+files are only downloaded, never committed or copied into this repo.
 
     python dev/fetch_fixtures.py            # fetch anything missing
     python dev/fetch_fixtures.py --list     # show the cache and what is in it
@@ -45,6 +47,115 @@ KICAD_FILES = [
     "pcblib/Tracks.v6.PcbLib",
 ]
 
+ALTIUMSHARP_REF = "ce72437f30cd54f549601d4e0ca5846d21272150"
+ALTIUMSHARP_DIR = "TestData/"
+
+ALTIUMSHARP_FILES = [
+    'DAC.SchDoc',
+    'Fanout Buffer.SchDoc',
+    'Generated/Individual/PCB/ARCS_TEST.PcbLib',
+    'Generated/Individual/PCB/ARC_ANGLES.PcbLib',
+    'Generated/Individual/PCB/ARC_FULL_CIRCLES.PcbLib',
+    'Generated/Individual/PCB/ARC_WIDTHS.PcbLib',
+    'Generated/Individual/PCB/BODY_3D.PcbLib',
+    'Generated/Individual/PCB/BODY_3D_EXTENDED.PcbLib',
+    'Generated/Individual/PCB/BODY_3D_STEP.PcbLib',
+    'Generated/Individual/PCB/BODY_3D_STEP_CHECKSUM0.PcbLib',
+    'Generated/Individual/PCB/COMPLEX_EXTENDED.PcbLib',
+    'Generated/Individual/PCB/COORDINATE.PcbLib',
+    'Generated/Individual/PCB/DIMENSION_ANGULAR.PcbLib',
+    'Generated/Individual/PCB/DIMENSION_BASELINE.PcbLib',
+    'Generated/Individual/PCB/DIMENSION_CENTER.PcbLib',
+    'Generated/Individual/PCB/DIMENSION_DATUM.PcbLib',
+    'Generated/Individual/PCB/DIMENSION_EXTENDED.PcbLib',
+    'Generated/Individual/PCB/DIMENSION_LINEAR.PcbLib',
+    'Generated/Individual/PCB/DIMENSION_RADIAL.PcbLib',
+    'Generated/Individual/PCB/FILLS_TEST.PcbLib',
+    'Generated/Individual/PCB/KEEPOUT_REGION.PcbLib',
+    'Generated/Individual/PCB/MULTIPIN_BGA.PcbLib',
+    'Generated/Individual/PCB/MULTIPIN_QFP.PcbLib',
+    'Generated/Individual/PCB/MULTIPIN_SOIC.PcbLib',
+    'Generated/Individual/PCB/MULTIPIN_SOP.PcbLib',
+    'Generated/Individual/PCB/PAD_BACK_DRILL.PcbLib',
+    'Generated/Individual/PCB/PAD_COUNTER_HOLE.PcbLib',
+    'Generated/Individual/PCB/PAD_CUSTOM_SHAPE.PcbLib',
+    'Generated/Individual/PCB/PAD_EXTENDED.PcbLib',
+    'Generated/Individual/PCB/PAD_HOLE_TYPES.PcbLib',
+    'Generated/Individual/PCB/PAD_ROTATED.PcbLib',
+    'Generated/Individual/PCB/PAD_SMD_OBLONG.PcbLib',
+    'Generated/Individual/PCB/PAD_SMD_RECTANGULAR.PcbLib',
+    'Generated/Individual/PCB/PAD_SMD_ROUND.PcbLib',
+    'Generated/Individual/PCB/PAD_SMD_ROUNDED.PcbLib',
+    'Generated/Individual/PCB/PAD_STACKED_MODES.PcbLib',
+    'Generated/Individual/PCB/PAD_THERMAL_RELIEF.PcbLib',
+    'Generated/Individual/PCB/PAD_TH_OBLONG.PcbLib',
+    'Generated/Individual/PCB/PAD_TH_OCTAGONAL.PcbLib',
+    'Generated/Individual/PCB/PAD_TH_RECTANGULAR.PcbLib',
+    'Generated/Individual/PCB/PAD_TH_ROUND.PcbLib',
+    'Generated/Individual/PCB/PAD_TH_SLOT.PcbLib',
+    'Generated/Individual/PCB/POLYGON_DIRECT_CONNECT.PcbLib',
+    'Generated/Individual/PCB/POLYGON_EXTENDED.PcbLib',
+    'Generated/Individual/PCB/POLYGON_HATCHED_45.PcbLib',
+    'Generated/Individual/PCB/POLYGON_HATCHED_90.PcbLib',
+    'Generated/Individual/PCB/POLYGON_ISLANDS.PcbLib',
+    'Generated/Individual/PCB/POLYGON_OUTLINE.PcbLib',
+    'Generated/Individual/PCB/POLYGON_SOLID.PcbLib',
+    'Generated/Individual/PCB/POLYGON_THERMAL.PcbLib',
+    'Generated/Individual/PCB/REGIONS_TEST.PcbLib',
+    'Generated/Individual/PCB/REGION_BOARD_OUTLINE.PcbLib',
+    'Generated/Individual/PCB/REGION_CAVITY.PcbLib',
+    'Generated/Individual/PCB/REGION_COMPLEX.PcbLib',
+    'Generated/Individual/PCB/REGION_COPPER.PcbLib',
+    'Generated/Individual/PCB/REGION_CUTOUT.PcbLib',
+    'Generated/Individual/PCB/REGION_KEEPOUT_TRACK.PcbLib',
+    'Generated/Individual/PCB/REGION_SLOT.PcbLib',
+    'Generated/Individual/PCB/REGION_WITH_HOLE.PcbLib',
+    'Generated/Individual/PCB/TEXT_ALL_STROKE_FONTS.PcbLib',
+    'Generated/Individual/PCB/TEXT_BARCODE.PcbLib',
+    'Generated/Individual/PCB/TEXT_BARCODE_ALL.PcbLib',
+    'Generated/Individual/PCB/TEXT_COMMENT.PcbLib',
+    'Generated/Individual/PCB/TEXT_DESIGNATOR.PcbLib',
+    'Generated/Individual/PCB/TEXT_INVERTED.PcbLib',
+    'Generated/Individual/PCB/TEXT_MULTILINE.PcbLib',
+    'Generated/Individual/PCB/TEXT_TEST.PcbLib',
+    'Generated/Individual/PCB/TEXT_TRUETYPE.PcbLib',
+    'Generated/Individual/PCB/TEXT_TRUETYPE_FONTS.PcbLib',
+    'Generated/Individual/PCB/TRACKS_MULTILAYER.PcbLib',
+    'Generated/Individual/PCB/TRACK_ALL_LAYERS.PcbLib',
+    'Generated/Individual/PCB/TRACK_KEEPOUT.PcbLib',
+    'Generated/Individual/PCB/TRACK_WIDTHS.PcbLib',
+    'Generated/Individual/PCB/VIA_BLIND_BOTTOM.PcbLib',
+    'Generated/Individual/PCB/VIA_BLIND_TOP.PcbLib',
+    'Generated/Individual/PCB/VIA_BURIED.PcbLib',
+    'Generated/Individual/PCB/VIA_MICROVIA.PcbLib',
+    'Generated/Individual/PCB/VIA_TENTING.PcbLib',
+    'Generated/Individual/PCB/VIA_TYPES.PcbLib',
+    'Generated/TestPcbLib.PcbLib',
+    'Level Shifter.SchDoc',
+    'MAX5719 Breakout.PcbDoc',
+    'Overview.SchDoc',
+    'PCB - DIODES - DIODES INC SDT10A45P5.PCBLIB',
+    'PCB - LEADLESS - BGA - AMD XILINX FCBGA-900 FFG900 31X31.PcbLib',
+    'PCB - LEADLESS - BGA - STM WLCSP-56 B0H4.PcbLib',
+    'PCB - LEADLESS - BGA - STMICRO UFBGA169 7X7.PcbLib',
+    'PCB - LEADLESS - BGA - STMICROELECTRONICS UFBGA176+25 10X10 A0E7.PcbLib',
+    'PCB - LEADLESS - BGA - XILINX AMD BGA-676 FFRB676 27x27.PcbLib',
+    'PCB - LEADLESS - LFCSP - AD LFCSP-24 4X4MM CP-24-8.PcbLib',
+    'PCB - LEADLESS - LFCSP - AD LFCSP-32 CP-32-7.PcbLib',
+    'PCB - LEADLESS - QFN - PSEMI QFN-12 3x3x0.5.PcbLib',
+    'PCB - LEADLESS - QFN - PSEMI QFN-24 4x4.PcbLib',
+    'PCB - LEADLESS - QFN - QORVO RFSW6024.PcbLib',
+    'Power Adapter Panel.PcbDoc',
+    'Power Supplies.SchDoc',
+    'Power Supply.SchDoc',
+    'SPI Isolator Panel.PcbDoc',
+    'SPI Isolator.PcbDoc',
+    'SPI Isolator.SchDoc',
+    'USB Power Adapter.PcbDoc',
+    'USB Power.SchDoc',
+    'VCOCXO Breakout.PcbDoc',
+]
+
 CFB_MAGIC = bytes.fromhex("d0cf11e0a1b11ae1")
 BINARY_SUFFIXES = (".pcbdoc", ".pcblib", ".schdoc", ".cspcbdoc", ".schlib")
 
@@ -63,6 +174,11 @@ def kicad_url(rel):
     path = urllib.parse.quote(KICAD_DIR + rel, safe="")
     return (f"https://gitlab.com/api/v4/projects/{KICAD_PROJECT}/repository/files/"
             f"{path}/raw?ref={KICAD_REF}")
+
+
+def altiumsharp_url(rel):
+    path = urllib.parse.quote(ALTIUMSHARP_DIR + rel)
+    return f"https://raw.githubusercontent.com/issus/AltiumSharp/{ALTIUMSHARP_REF}/{path}"
 
 
 def fetch(url, dest):
@@ -93,17 +209,19 @@ def main(argv=None):
         return 0
 
     failures = 0
-    for rel in KICAD_FILES:
-        dest = root / "kicad" / rel
+    jobs = [("kicad", rel, kicad_url(rel)) for rel in KICAD_FILES] + \
+        [("altiumsharp", rel, altiumsharp_url(rel)) for rel in ALTIUMSHARP_FILES]
+    for source, rel, url in jobs:
+        dest = root / source / rel
         if dest.is_file() and not args.force:
-            print(f"cached   {rel}")
+            print(f"cached   {source}/{rel}")
             continue
         try:
-            size, digest = fetch(kicad_url(rel), dest)
-            print(f"fetched  {rel}  {size} bytes  sha256 {digest}")
+            size, digest = fetch(url, dest)
+            print(f"fetched  {source}/{rel}  {size} bytes  sha256 {digest}")
         except Exception as e:  # report every failure, keep going
             failures += 1
-            print(f"FAILED   {rel}: {e}", file=sys.stderr)
+            print(f"FAILED   {source}/{rel}: {e}", file=sys.stderr)
     print(f"cache: {root}")
     if failures:
         print(f"{failures} file(s) failed to download", file=sys.stderr)

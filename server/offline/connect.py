@@ -234,6 +234,7 @@ def report(doc, nets=None, limit=200):
     c = Connectivity(doc)
     un = c.unrouted(nets)
     return {
+        "warnings": doc.board_warnings(),
         "summary": c.summary(),
         "unrouted": [{"net": e["net_name"], "gap_mm": round(e["gap_mm"], 4),
                       "from": [round(v, 4) for v in e["from"]],

@@ -78,7 +78,8 @@ class KicadCrossCheck(unittest.TestCase):
                 continue
             with self.subTest(f.name):
                 ed = Editor(doc)
-                comp = max(doc.components,
+                dups = doc.duplicate_designators
+                comp = max((c for c in doc.components if c.designator not in dups),
                            key=lambda c: sum(1 for p in doc.pads if p.component == c.index))
                 npads = sum(1 for p in doc.pads if p.component == comp.index)
                 nvias = sum(1 for v in doc.vias if v.component == comp.index)
