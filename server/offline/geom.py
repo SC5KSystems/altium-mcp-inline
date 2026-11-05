@@ -160,8 +160,18 @@ def text_box(t):
     stroke width (mm)."""
     sh = require()
     w = max(len(t.text), 1) * t.height * 0.8
-    x0, x1 = (t.x - w, t.x) if t.mirrored else (t.x, t.x + w)
-    g = _rotate(sh.box(x0, t.y, x1, t.y + t.height), t.rotation, t.x, t.y)
+    h = t.height
+    ox, oy = 0.0, 0.0                    # text corner from the anchor, unmirrored
+    frame = getattr(t, "frame", None)
+    if frame:                            # placed inside the frame by its justification
+        fw, fh, m = frame
+        j = getattr(t, "justification", 3)
+        col, row = (j - 1) // 3, (j - 1) % 3      # 0 left/1 center/2 right; 0 top/1 center/2 bottom
+        rw, rh = max(fw - 2 * m, 0.0), max(fh - 2 * m, 0.0)
+        ox = m + (0.0, (rw - w) / 2, rw - w)[col] if 1 <= j <= 9 else m
+        oy = m + (rh - h, (rh - h) / 2, 0.0)[row] if 1 <= j <= 9 else m
+    x0, x1 = (t.x - ox - w, t.x - ox) if t.mirrored else (t.x + ox, t.x + ox + w)
+    g = _rotate(sh.box(x0, t.y + oy, x1, t.y + oy + h), t.rotation, t.x, t.y)
     half = max(getattr(t, "stroke_width", 0.0) or 0.0, 0.0) / 2
     return g.buffer(half, join_style="mitre") if half > 0 else g
 

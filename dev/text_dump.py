@@ -36,6 +36,9 @@ def main(argv=None):
                   f"{t.y - oy:.4f}), layer {L.name(t.layer)}, height {t.height:.4f}, rotation "
                   f"{t.rotation:.3f}, mirrored {t.mirrored}, stroke {t.stroke_width:.4f}, "
                   f"hidden {t.hidden}, record bytes {len(t.subs[0])}")
+            fr = t.frame
+            print(f"  font {t.font_type}, justification {t.justification}, frame "
+                  + (f"{fr[0]:.4f} x {fr[1]:.4f} margin {fr[2]:.4f}" if fr else "none"))
             g = geom.text_box(t)
             print(f"  box {[round(v, 4) for v in g.bounds]}")
             copper = L.TOP if t.layer == L.TOP_OVERLAY else L.BOTTOM

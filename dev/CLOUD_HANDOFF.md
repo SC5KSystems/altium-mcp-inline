@@ -735,6 +735,18 @@ Open:
   the text box runs leftward for mirrored text and is grown by half the
   stroke width, messages name the text, and `dev/text_dump.py board X Y`
   prints the reader's view of parts' texts (awaiting its output).
+  Next rerun: 6 matched, 5 offline only (4 ComponentClearance), Altium's
+  4 designator texts still unmatched. text_dump on the real board: Altium
+  reports those texts 0.35 to 5 mm from the position the record stores
+  (different per part, so not the origin). Text records of 252 bytes
+  carry font type (offset 43), frame size (124, 128), margin (111),
+  justification (132), frame flag (230) and a justification-valid flag
+  (240), as KiCad's importer reads them; `geom.text_box` now places
+  framed text inside its frame by the justification (KiCad's rule) and
+  text_dump prints these fields. The writer's template text had a frame
+  on (4.83 x 1.10 mm, right bottom), which may have put offline-written
+  text away from its position: written text is now frameless and left
+  bottom (UNVERIFIED in Altium; check with the writer's text step).
   Still approximate: text is checked as a box (0.8 x height per
   character), so text violations near the limit may differ; the 4
   ComponentClearance (3D body outlines) are not yet explained.

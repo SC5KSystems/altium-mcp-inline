@@ -184,6 +184,18 @@ class Checks(unittest.TestCase):
             d = run(s, checks=["SilkToSolderMaskClearance"])
             self.assertEqual(len(d.violations), found, gap)
 
+    def test_text_box_follows_frame_and_mirroring(self):
+        from types import SimpleNamespace as T
+        base = dict(text="AB", x=10.0, y=20.0, height=1.0, rotation=0.0, stroke_width=0.0)
+        bounds = lambda **kw: [round(v, 3) for v in geom.text_box(T(**{**base, **kw})).bounds]
+        self.assertEqual(bounds(mirrored=False), [10.0, 20.0, 11.6, 21.0])
+        self.assertEqual(bounds(mirrored=True), [8.4, 20.0, 10.0, 21.0])
+        # right-bottom in a 5 x 2 frame with a 0.1 margin: the text ends at the right margin
+        self.assertEqual(bounds(mirrored=False, frame=(5.0, 2.0, 0.1), justification=9),
+                         [13.3, 20.1, 14.9, 21.1])
+        self.assertEqual(bounds(mirrored=False, frame=(5.0, 2.0, 0.1), justification=1),
+                         [10.1, 20.9, 11.7, 21.9])
+
     def test_hidden_designator_is_not_checked(self):
         s = board()
         s.component("R1", "R0805", 10, 10)

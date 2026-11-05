@@ -194,6 +194,10 @@ def text(doc, value, x, y, height, layer=L.TOP_OVERLAY, rotation=0.0, stroke_wid
     if len(s) > 41:
         s[40] = 1 if comment else 0
         s[41] = 1 if designator else 0
+    if len(s) > 132:
+        s[132] = 3                       # left bottom: the position is the text's corner
+    if len(s) > 230:
+        s[230] = 0                       # no text frame (the template carries one)
     b = str(value).encode("cp1252", errors="replace")[:255]
     t.subs[1] = bytearray([len(b)]) + b
     t.pending_string = str(value)

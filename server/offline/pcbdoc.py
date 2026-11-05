@@ -855,6 +855,30 @@ class Text(BinRecord):
     def is_designator(self):
         return self._has(42, 1) and bool(self.subs[0][41])
 
+    # newer records (layout as KiCad's importer reads it): font, frame, justification
+    @property
+    def font_type(self):
+        """'stroke', 'truetype' or 'barcode'."""
+        v = self.subs[0][43] if self._has(43, 1) else 0
+        return {0: "stroke", 1: "truetype", 2: "barcode"}.get(v, "stroke")
+
+    @property
+    def frame(self):
+        """(width, height, margin) of the text frame, or None."""
+        if not self._has(132, 1):
+            return None
+        w, h = u2mm(self._get("i", 124)), u2mm(self._get("i", 128))
+        on = bool(self.subs[0][230]) if self._has(230, 1) else (w > 0 and h > 0)
+        return (w, h, u2mm(self._get("i", 111))) if on and w > 0 and h > 0 else None
+
+    @property
+    def justification(self):
+        """Where text sits in its frame: 1-9 = left/center/right x top/center/
+        bottom (3 = left bottom, the default when not stored)."""
+        if self._has(240, 1) and self.subs[0][240]:
+            return self.subs[0][132] or 3
+        return 3
+
     @property
     def hidden(self):
         """A designator or comment its component does not show (NAMEON or
