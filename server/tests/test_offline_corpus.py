@@ -162,3 +162,20 @@ class FabFolders(unittest.TestCase):
             empty.mkdir()
             rep = check(doc, empty)
             self.assertTrue(any("no Gerber or drill file" in p for p in rep["problems"]))
+
+
+@unittest.skipUnless(HAVE, "shapely not installed")
+class SilkAtTheEdge(unittest.TestCase):
+    def test_board_outline_covers_silkscreen(self):
+        """Altium's Board Outline Clearance flags silkscreen tracks too."""
+        from offline.drc import DRC
+        from offline.synth import Synth
+        s = Synth(20, 20)
+        s.net("GND")
+        s.rule("BoardOutlineClearance", "BoardOutlineClearance", GAP=0.2)
+        s.track("TOPOVERLAY", 2, 19.9, 10, 19.9, 0.15)     # 0.025 mm past the edge
+        s.track("TOPOVERLAY", 2, 10, 10, 10, 0.15)         # well inside
+        d = DRC(s.build(), checks=["BoardOutlineClearance"])
+        d.run()
+        self.assertEqual(len(d.violations), 1)
+        self.assertEqual(d.violations[0].layer, "Top Overlay")

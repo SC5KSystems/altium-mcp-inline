@@ -553,8 +553,7 @@ class DRC:
         if not on and not edge:
             self._no_rule("BoardOutlineClearance")
             return
-        sh = geom.require()
-        import numpy as np
+        geom.require()
         board = geom.board_shape(self.doc)
         if board is None or board.is_empty:
             self.skipped.append("BoardOutlineClearance: board has no outline")
@@ -566,33 +565,59 @@ class DRC:
                 continue
             items = [it for it in self.layer_items(layer)
                      if not (it.keepout or it.hole or it.kind == "text")]
-            if not items:
-                continue
-            shapes = np.array([it.shape for it in items], dtype=object)
-            dist = sh.distance(shapes, rim)
-            inside = sh.covers(board, shapes)
-            for it, d, ok in zip(items, dist.tolist(), inside.tolist()):
-                if not ok:
-                    d = 0.0
-                limit, rname = None, None
-                if on:
-                    gap, rule = self.rules.board_outline(it.obj)
-                    if gap is not None:
-                        limit, rname = gap, rule.name
-                tol = TOL + self._arc_slack(it.obj)
-                for lim, name in ((limit, rname),
-                                  (edge or None, f"dfm:{self.preset_name}" if edge else None)):
-                    if lim is None or d >= lim - tol:
-                        continue
-                    key = (it.obj.storage, it.obj.index, name)
-                    if key in found and found[key][1] <= d:
-                        continue
-                    p = sh.shortest_line(it.shape, rim).interpolate(0.5, normalized=True)
-                    found[key] = (name, d, lim, layer, it, (p.x, p.y))
+            self._outline_layer(items, layer, board, rim, on, edge, found)
+        # Altium's check covers silkscreen too (seen on a real board)
+        for layer in (L.TOP_OVERLAY, L.BOTTOM_OVERLAY):
+            self._outline_layer(self._silk_items(layer), layer, board, rim, on, None, found)
         for name, d, lim, layer, it, at in found.values():
             desc = [self.describe(it.obj)]
             self.add(name, "BoardOutlineClearance", L.name(layer), at, d, lim, desc,
                      f"{self._label(desc[0])} {d:.4f} mm from the board edge < {lim:.4f} mm")
+
+    def _silk_items(self, layer):
+        out = []
+        doc = self.doc
+        for kind, lst in (("track", doc.tracks), ("arc", doc.arcs), ("fill", doc.fills),
+                          ("region", doc.regions)):
+            for r in lst:
+                if r.layer == layer and (kind != "region" or r.kind == "copper"):
+                    g = geom.copper_shape(r, layer)
+                    if not g.is_empty and self._in_box(g):
+                        out.append(_Item(r, kind, None, g, layer))
+        for t in (doc.texts if self.text else []):
+            if t.layer == layer:
+                g = geom.text_box(t)
+                if self._in_box(g):
+                    out.append(_Item(t, "text", None, g, layer, approx=True))
+        return out
+
+    def _outline_layer(self, items, layer, board, rim, on, edge, found):
+        sh = geom.require()
+        import numpy as np
+        if items:
+            shapes = np.array([it.shape for it in items], dtype=object)
+        if not items:
+            return
+        dist = sh.distance(shapes, rim)
+        inside = sh.covers(board, shapes)
+        for it, d, ok in zip(items, dist.tolist(), inside.tolist()):
+            if not ok:
+                d = 0.0
+            limit, rname = None, None
+            if on:
+                gap, rule = self.rules.board_outline(it.obj)
+                if gap is not None:
+                    limit, rname = gap, rule.name
+            tol = TOL + self._arc_slack(it.obj)
+            for lim, name in ((limit, rname),
+                              (edge or None, f"dfm:{self.preset_name}" if edge else None)):
+                if lim is None or d >= lim - tol:
+                    continue
+                key = (it.obj.storage, it.obj.index, name)
+                if key in found and found[key][1] <= d:
+                    continue
+                p = sh.shortest_line(it.shape, rim).interpolate(0.5, normalized=True)
+                found[key] = (name, d, lim, layer, it, (p.x, p.y))
 
     def check_silk(self):
         if not self.has_rules("SilkToSolderMaskClearance"):

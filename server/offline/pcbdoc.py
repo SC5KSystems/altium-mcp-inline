@@ -1421,8 +1421,11 @@ class PcbDoc:
 
     @property
     def duplicate_designators(self):
-        """{designator: [component indexes]} for designators used more than once."""
-        return {self.components[v[0]].designator: list(v) for v in self._comp_dups.values()}
+        """{designator: [component indexes]} for non-empty designators used more
+        than once (unnamed parts are common and not reported; a lookup by an
+        empty name still refuses)."""
+        return {self.components[v[0]].designator: list(v) for k, v in self._comp_dups.items()
+                if k.strip()}
 
     def has_component(self, designator):
         return str(designator).upper() in self._comp_by_des

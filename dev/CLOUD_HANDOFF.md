@@ -48,7 +48,7 @@ Branch: `claude/gracious-rubin-f1hbv2`.
 | WP10 MCP tools (`offline_pcb_*`), worked example, JSON netlist, `dev/live_validate_tools.py` | done; tools registered and called through FastMCP 1.5.0 here; the MCP server on Windows and the acceptance script against a real Altium UNVERIFIED | `a98d8d7` |
 | Harder fixtures: AltiumSharp boards, panels, libraries, schematics in the cache; fixes they found | done | `3c8926f` |
 | Speed on a large board; better pour match (IsPolygon scope, pour arc tolerance) | done offline | `57bf058` |
-| First acceptance run on the real board: fixes to the acceptance script, fab-check and the writer check list | done; rerun pending | see git log ("acceptance") |
+| First acceptance run on the real board: fixes to the acceptance script, fab-check and the writer check list | done; rerun passed the repour, audit and live-edit checks | `73b748f` |
 | Phase-6 branch ported (holes, fasteners, edges, rule scopes, pad ties, neck, schematic tools, footprint check, calculators, two `pcb_utils.pas` fixes, validation harness) | done offline; ported, not merged (see notes); the harness on this reader and the deployed `.pas` fixes UNVERIFIED | `1867199` |
 
 ## How to run
@@ -666,6 +666,28 @@ What failed and what was done:
   net): whether the project was in sync is to be confirmed (Update PCB
   in Altium shows the truth).
 - Autoroute skipped: no Freerouting jar on that PC (optional).
+
+## Second acceptance run (2026-11-05, same board, run-stamped names)
+
+Passed on the real board: Altium opened every offline-written file with no
+dialog; Altium's own Repour All of the unpoured copy against the offline
+pour: area-weighted IoU 0.9979, worst polygon 0.9850 (36 polygons); the
+membership audit ran read-only (3,249 primitives, nothing stale); the live
+scripts added a track, renamed a net and saved, and the saved file reads
+back with both edits. Original untouched.
+
+Open:
+- DRC agreement 0 %: per rule, offline found Clearance and annular-ring
+  errors on 12 relay pins that Altium does not report (the pad shape the
+  reader builds does not contain the hole: `dev/pad_dump.py` prints those
+  pads; awaiting its output), and Altium found Board Outline Clearance on
+  six silkscreen tracks and Silk To Solder Mask on designator text, both of
+  which the offline DRC skipped. Since then: the outline check covers
+  silkscreen, and the acceptance comparison checks text (as boxes).
+- ECO preview: Altium's Update PCB proposes only the 4 footprint changes the
+  preview also found; the preview's split, pin moves and new net are wrong
+  (awaiting `eco preview` output to find why).
+- fab-check: the outputs folder held no Gerber or drill files (2 other files).
 
 ## UNVERIFIED (needs Altium)
 

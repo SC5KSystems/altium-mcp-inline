@@ -670,7 +670,9 @@ class Run:
         if alt.get("success") is False or "violations" not in alt:
             self.record("drc-agree", FAIL, f"get_drc_violations: {alt.get('error') or alt}")
             return
-        off = self.tool("offline_pcb_drc", board=str(self.copy), copper="saved", limit=100000)
+        # text on: Altium checks designators and other text (offline as boxes, approximate)
+        off = self.tool("offline_pcb_drc", board=str(self.copy), copper="saved", limit=100000,
+                        text=True)
         if not off["ok"]:
             self.record("drc-agree", FAIL, off["error"])
             return
